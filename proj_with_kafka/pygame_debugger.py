@@ -49,6 +49,7 @@ COLOR_NEON_GREEN  = (50, 255, 130)
 COLOR_NEON_ORANGE = (255, 140, 0)
 COLOR_NEON_RED    = (255, 60, 80)
 COLOR_NEON_PURPLE = (180, 100, 255)
+COLOR_NEON_YELLOW = (255, 210, 60)
 COLOR_KAFKA       = (255, 165, 0)
 
 WHITE  = (250, 250, 250)
@@ -218,7 +219,16 @@ def process_event(ev):
 
 def udp_server():
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    sock.bind(("0.0.0.0", 9999))
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    try:
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
+    except:
+        pass
+    try:
+        sock.bind(("0.0.0.0", 9999))
+    except Exception as e:
+        _append_log(f"SOCKET ERROR: {e}", COLOR_NEON_RED)
+        return
     while True:
         try:
             data, _ = sock.recvfrom(4096)
@@ -381,8 +391,25 @@ svc_states = {s: True for s in SVC_LIST}
 def toggle_svc(svc):
     is_up = svc_states[svc]
     action = "stop" if is_up else "start"
-    subprocess.Popen(["docker-compose", action, svc], cwd=PROJ_DIR)
-    svc_states[svc] = not is_up
+    
+    # Try docker-compose first, then docker compose
+    cmds = [["docker-compose", action, svc], ["docker", "compose", action, svc]]
+    success = False
+    for cmd in cmds:
+        try:
+            subprocess.Popen(cmd, cwd=PROJ_DIR, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            success = True
+            break
+        except:
+            continue
+            
+    if success:
+        svc_states[svc] = not is_up
+        with lock:
+            _append_log(f"[CTRL] {svc} {'STOPPING' if is_up else 'STARTING'}...", COLOR_NEON_YELLOW)
+    else:
+        with lock:
+            _append_log(f"[CTRL ERR] Could not run docker-compose", COLOR_NEON_RED)
 
 # Init UI elements
 input_box = TextInput(40, NODE_AREA_H + 90, 600, 45)
