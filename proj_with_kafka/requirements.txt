@@ -1,0 +1,6 @@
+flask
+requests
+textblob
+flask-socketio
+pygame
+confluent-kafka
