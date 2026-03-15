@@ -1,3 +1,14 @@
+"""
+Microservices Real-Time Request Debugger
+=========================================
+Teaching tool — visualises HTTP request flow across microservices.
+
+Threading model (NO freeze guarantee):
+  - UDP server thread  : reads events, updates shared state under `lock`
+  - Main (pygame) thread: grabs `lock` ONCE per frame for a quick snapshot,
+                          then renders the snapshot with ZERO locks held.
+  This means the main thread is NEVER blocked on network I/O.
+"""
 import pygame
 import socket
 import json
@@ -6,281 +17,675 @@ import sys
 import math
 import requests
 import time
+import subprocess
+import signal
+from dataclasses import dataclass, field
+from typing import List, Tuple
 
 pygame.init()
 
-# 1. Increased Screen Size
-WIDTH, HEIGHT = 1200, 800
+# ─────────────────────────────────────────────
+#  LAYOUT
+# ─────────────────────────────────────────────
+WIDTH, HEIGHT = 1400, 900
+LOG_W         = 320
+MAIN_W        = WIDTH - LOG_W
+NODE_H        = 500
+CTRL_H        = 70
+INPUT_H       = HEIGHT - NODE_H - CTRL_H
+
 screen = pygame.display.set_mode((WIDTH, HEIGHT))
-pygame.display.set_caption("Microservices Real-Time Architecture Debugger")
+pygame.display.set_caption("Microservices Request Debugger — Live Teaching View")
 
-# 2. Adjusted Node Positions for larger screen
-nodes = {
-    "USER": (100, 400),
-    "Service_A": (400, 400),
-    "Service_B": (750, 400),
-    "Service_C": (1100, 400)
+# ─────────────────────────────────────────────
+#  COLOURS
+# ─────────────────────────────────────────────
+BG         = (13,  16,  22)
+GRID_C     = (22,  26,  34)
+PANEL_BG   = (18,  22,  30)
+BORDER     = (40,  50,  65)
+WHITE      = (255, 255, 255)
+GRAY       = (140, 150, 165)
+L_GRAY     = (200, 210, 225)
+A_BLUE     = ( 60, 160, 255)
+A_GRN      = ( 50, 230, 110)
+A_RED      = (255,  80,  80)
+A_YEL      = (255, 210,  60)
+A_PUR      = (170, 100, 255)
+IDLE_C     = ( 50, 130, 210)
+HDR_DARK   = ( 10,  13,  18)
+
+# ─────────────────────────────────────────────
+#  FONTS
+# ─────────────────────────────────────────────
+F_TITLE = pygame.font.SysFont(None, 32, bold=True)
+F_NODE  = pygame.font.SysFont(None, 26, bold=True)
+F_BODY  = pygame.font.SysFont(None, 22)
+F_SM    = pygame.font.SysFont(None, 18)
+F_TINY  = pygame.font.SysFont(None, 15)
+
+# ─────────────────────────────────────────────
+#  NODE LAYOUT
+# ─────────────────────────────────────────────
+NY = NODE_H // 2
+
+NODES = {
+    "USER":      (int(MAIN_W * 0.08), NY),
+    "Service_A": (int(MAIN_W * 0.33), NY),
+    "Service_B": (int(MAIN_W * 0.60), NY),
+    "Service_C": (int(MAIN_W * 0.87), NY),
 }
+NW, NH = 160, 110   # node box width/height
 
-packets = [] 
-node_status = {k: "IDLE" for k in nodes.keys()}
-active_module = {k: "" for k in nodes.keys()}
-active_req_id = {k: "" for k in nodes.keys()}
-recent_logs = []
-last_result = ""
-last_result_color = (255, 255, 255)
+NODE_DESC = {
+    "USER":      "You! Sends HTTP POST requests\nto the Gateway service.",
+    "Service_A": "Gateway / Auth Service\nValidates API key, then\nforwards to Service B.",
+    "Service_B": "Sentiment Analyser\nRuns TextBlob NLP, saves\nresult to SQLite DB.",
+    "Service_C": "Dashboard Counter\nCounts Happy/Sad/Angry\nand broadcasts via WebSocket.",
+}
+NODE_PORTS = {"Service_A": "5000", "Service_B": "5002", "Service_C": "5003"}
 
+# ─────────────────────────────────────────────
+#  SHARED STATE  (written by UDP thread)
+# ─────────────────────────────────────────────
 lock = threading.Lock()
 
-# 3. Interactive Input Handler
-class TextInput:
-    def __init__(self, x, y, w, h):
-        self.rect = pygame.Rect(x, y, w, h)
-        self.color = (40, 45, 55)
-        self.text = "I love this project!"
-        self.active = False
+# Node state (protected by lock)
+node_status   = {k: "IDLE" for k in NODES}
+active_module = {k: ""     for k in NODES}
+active_req_id = {k: ""     for k in NODES}
 
-    def handle_event(self, event):
-        if event.type == pygame.MOUSEBUTTONDOWN:
-            if self.rect.collidepoint(event.pos):
-                self.active = True
-            else:
-                self.active = False
-        if event.type == pygame.KEYDOWN and self.active:
-            if event.key == pygame.K_BACKSPACE:
-                self.text = self.text[:-1]
-            else:
-                self.text += event.unicode
+# Packets: each dict has {start, end, progress, color, type, req_id, trail, cx, cy}
+packets: list = []
+MAX_PACKETS = 20
 
-    def draw(self, screen):
-        border_color = (100, 200, 255) if self.active else (60, 65, 75)
-        pygame.draw.rect(screen, self.color, self.rect, border_radius=5)
-        pygame.draw.rect(screen, border_color, self.rect, width=2, border_radius=5)
-        txt = small_font.render(self.text, True, (255, 255, 255))
-        screen.blit(txt, (self.rect.x + 10, self.rect.y + 10))
+# Event log: list of (time_str, msg, color)
+event_log: list = []
+MAX_LOG = 50
 
-input_box = TextInput(400, 650, 400, 40)
+# Emotion counters
+emotion_counts = {"Happy": 0, "Sad": 0, "Angry": 0}
 
-def send_request(text_val):
-    global last_result, last_result_color
-    try:
-        url = "http://localhost:5000/api/post"
-        headers = {"Authorization": "Bearer super-secret-key"}
-        payload = {"user": "pygame_user", "text": text_val}
-        last_result = "Sending..."
-        last_result_color = (200, 200, 200)
-        resp = requests.post(url, json=payload, headers=headers, timeout=10)
-        if resp.status_code == 200:
-            last_result = f"Success: {resp.json().get('emotion', 'Done')}"
-            last_result_color = (100, 255, 100)
-        else:
-            last_result = f"Error: {resp.status_code}"
-            last_result_color = (255, 100, 100)
-    except Exception as e:
-        last_result = f"Failed: {str(e)}"
-        last_result_color = (255, 50, 50)
+# ─────────────────────────────────────────────
+#  PER-FRAME SNAPSHOT  (read by render thread)
+# ─────────────────────────────────────────────
+@dataclass
+class FrameState:
+    node_status:   dict  = field(default_factory=dict)
+    active_module: dict  = field(default_factory=dict)
+    active_req_id: dict  = field(default_factory=dict)
+    emotion_counts: dict = field(default_factory=dict)
+    log_slice:     list  = field(default_factory=list)
+    packet_snap:   list  = field(default_factory=list)
 
-def udp_server():
-    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    sock.bind(("0.0.0.0", 9999))
-    print("Debugger listening on UDP 9999...")
-    while True:
-        try:
-            data, addr = sock.recvfrom(4096)
-            # Log raw data receipt for troubleshooting
-            print(f"DEBUG: Received {len(data)} bytes from {addr}") 
-            event = json.loads(data.decode('utf-8'))
-            with lock:
-                process_event(event)
-        except Exception as e:
-            print(f"Debugger error while receiving: {e}")
 
-def process_event(event):
-    src = event.get("source")
-    dst = event.get("target")
-    action = event.get("action")
-    module = event.get("module", "")
-    request_id = event.get("request_id", "UNKNOWN")
-    
-    # Restored Log Printing for Troubleshooting
-    log_msg = f"[{request_id}] {src} -> {dst} : {action} [{module}]"
-    print(f"EVENT: {log_msg}")
-    
+def make_snapshot(log_scroll: int) -> FrameState:
+    """Grab lock ONCE, copy everything needed for one frame."""
+    with lock:
+        # Advance packets & build trail
+        alive = []
+        for p in packets:
+            sp = NODES.get(p["start"])
+            ep = NODES.get(p["end"])
+            if sp and ep:
+                off = -14 if p["type"] == "req" else 14
+                x = int(sp[0] + (ep[0] - sp[0]) * p["progress"])
+                y = int((sp[1] + off) + (ep[1] - sp[1]) * p["progress"])
+                p["trail"].append((x, y))
+                if len(p["trail"]) > 20:
+                    p["trail"].pop(0)
+                p["cx"] = x
+                p["cy"] = y
+                p["progress"] += 0.004
+            if p["progress"] < 1.0:
+                alive.append(p)
+        packets.clear()
+        packets.extend(alive)
+
+        fs = FrameState(
+            node_status    = dict(node_status),
+            active_module  = dict(active_module),
+            active_req_id  = dict(active_req_id),
+            emotion_counts = dict(emotion_counts),
+            log_slice      = list(event_log[-(LOG_VISIBLE + log_scroll):][:LOG_VISIBLE]),
+            packet_snap    = [
+                {
+                    "color":  p["color"],
+                    "trail":  list(p["trail"]),
+                    "cx":     p["cx"],
+                    "cy":     p["cy"],
+                    "req_id": p["req_id"],
+                }
+                for p in packets
+            ],
+        )
+    return fs
+
+
+LOG_VISIBLE = 18
+
+# ─────────────────────────────────────────────
+#  UDP EVENT RECEIVER
+# ─────────────────────────────────────────────
+ACTION_COLORS = {
+    "REQ_OUT":    A_GRN,
+    "REQ_IN":     (100, 230, 130),
+    "RESP_OUT":   A_RED,
+    "RESP_IN":    (255, 140, 140),
+    "PROCESSING": A_YEL,
+}
+
+
+def _append_log(msg: str, color: tuple):
+    ts = time.strftime("%H:%M:%S")
+    event_log.append((ts, msg, color))
+    if len(event_log) > MAX_LOG:
+        event_log.pop(0)
+
+
+def process_event(ev: dict):
+    src    = ev.get("source", "?")
+    dst    = ev.get("target", "?")
+    action = ev.get("action", "?")
+    module = ev.get("module", "")
+    req_id = ev.get("request_id", "UNKNOWN")
+
+    color = ACTION_COLORS.get(action, L_GRAY)
+    _append_log(f"[{req_id[-6:]}] {src}→{dst}  {action}", color)
+    if module:
+        _append_log(f"   module: {module}", GRAY)
+
     if action == "REQ_OUT":
-        if src in nodes and dst in nodes:
+        if src in NODES and dst in NODES and len(packets) < MAX_PACKETS:
             packets.append({
-                "start": src, "end": dst, "progress": 0.0, 
-                "color": (50, 255, 50), "type": "req", "req_id": request_id, 
-                "history": [] 
+                "start": src, "end": dst, "progress": 0.0,
+                "color": A_GRN, "type": "req", "req_id": req_id,
+                "trail": [], "cx": 0, "cy": 0,
             })
-        if src in nodes:
-            node_status[src] = "WAITING"
+        if src in NODES:
+            node_status[src]   = "WAITING"
             active_module[src] = module
-            active_req_id[src] = request_id
-    elif action == "REQ_IN" or action == "PROCESSING":
-        if dst in nodes:
-            node_status[dst] = "PROCESSING"
+            active_req_id[src] = req_id
+
+    elif action in ("REQ_IN", "PROCESSING"):
+        if dst in NODES:
+            node_status[dst]   = "PROCESSING"
             active_module[dst] = module
-            active_req_id[dst] = request_id
+            active_req_id[dst] = req_id
+
     elif action == "RESP_OUT":
-        if src in nodes and dst in nodes:
+        if src in NODES and dst in NODES and len(packets) < MAX_PACKETS:
             packets.append({
-                "start": src, "end": dst, "progress": 0.0, 
-                "color": (255, 50, 50), "type": "resp", "req_id": request_id,
-                "history": [] 
+                "start": src, "end": dst, "progress": 0.0,
+                "color": A_RED, "type": "resp", "req_id": req_id,
+                "trail": [], "cx": 0, "cy": 0,
             })
-        if src in nodes:
+        if src in NODES:
             active_module[src] = module
-            active_req_id[src] = request_id
+            active_req_id[src] = req_id
+
     elif action == "RESP_IN":
-        if dst in nodes:
-            node_status[dst] = "IDLE"
+        if dst in NODES:
+            node_status[dst]   = "IDLE"
             active_module[dst] = ""
             active_req_id[dst] = ""
 
+
+def udp_server():
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    sock.bind(("0.0.0.0", 9999))
+    sock.settimeout(1.0)          # prevents blocking forever if no data
+    print("Debugger listening on UDP port 9999…")
+    while True:
+        try:
+            data, _ = sock.recvfrom(4096)
+            ev = json.loads(data.decode("utf-8"))
+            with lock:
+                process_event(ev)
+        except socket.timeout:
+            pass                  # normal — just loop again
+        except Exception as exc:
+            print(f"UDP error: {exc}")
+
+
 threading.Thread(target=udp_server, daemon=True).start()
 
-# Use generic fonts for better Docker compatibility
-font = pygame.font.SysFont(None, 24, bold=True)
-small_font = pygame.font.SysFont(None, 18)
+# ─────────────────────────────────────────────
+#  HTTP SEND (runs in thread)
+# ─────────────────────────────────────────────
+last_result       = ""
+last_result_color = WHITE
 
-clock = pygame.time.Clock()
-running = True
 
-def draw_grid():
-    for x in range(0, WIDTH, 40):
-        pygame.draw.line(screen, (30, 34, 40), (x, 0), (x, HEIGHT))
-    for y in range(0, HEIGHT, 40):
-        pygame.draw.line(screen, (30, 34, 40), (0, y), (WIDTH, y))
-
-# 4. Offset Drawing for Two-Way Visibility
-def draw_line(s, e):
-    s_pos = nodes[s]
-    e_pos = nodes[e]
-    # Draw two lines with slight offsets
-    pygame.draw.line(screen, (40, 60, 80), (s_pos[0], s_pos[1]-10), (e_pos[0], e_pos[1]-10), 2) # REQ path
-    pygame.draw.line(screen, (80, 40, 40), (s_pos[0], s_pos[1]+10), (e_pos[0], e_pos[1]+10), 2) # RESP path
-
-while running:
-    screen.fill((15, 18, 24))
-    draw_grid()
-    
-    mouse_pos = pygame.mouse.get_pos()
-    
-    for event in pygame.event.get():
-        if event.type == pygame.QUIT:
-            running = False
-        input_box.handle_event(event)
-
-        if event.type == pygame.MOUSEBUTTONDOWN:
-            # Check Send Button
-            send_btn = pygame.Rect(810, 650, 100, 40)
-            if send_btn.collidepoint(event.pos):
-                threading.Thread(target=send_request, args=(input_box.text,), daemon=True).start()
-            
-    # Draw connections
-    draw_line("USER", "Service_A")
-    draw_line("Service_A", "Service_B")
-    draw_line("Service_B", "Service_C")
-    
-    # Draw nodes
-    for name, pos in nodes.items():
-        status = node_status.get(name, "IDLE")
-        
-        if status == "PROCESSING":
-            pulse = (math.sin(time.time() * 1.5) + 1) / 2
-            color = (int(200 + 55 * pulse), int(150 + 50 * pulse), 0)
-        elif status == "WAITING":
-            color = (150, 100, 255)
+def send_request(text: str):
+    global last_result, last_result_color
+    try:
+        last_result       = "Sending…"
+        last_result_color = GRAY
+        resp = requests.post(
+            "http://localhost:5000/api/post",
+            json    = {"user": "student", "text": text},
+            headers = {"Authorization": "Bearer super-secret-key"},
+            timeout = 10,
+        )
+        if resp.status_code == 200:
+            emo = resp.json().get("emotion", "Done")
+            with lock:
+                emotion_counts[emo] = emotion_counts.get(emo, 0) + 1
+            last_result       = f"Response: {emo}"
+            last_result_color = A_GRN
         else:
-            color = (50, 150, 220)
-            
-        block_w, block_h = 150, 100
-        rect = pygame.Rect(pos[0] - block_w//2, pos[1] - block_h//2, block_w, block_h)
-        
-        pygame.draw.rect(screen, (10, 12, 16), (rect.x+5, rect.y+5, block_w, block_h), border_radius=10)
-        pygame.draw.rect(screen, (25, 30, 40), rect, border_radius=10)
-        pygame.draw.rect(screen, color, rect, width=3, border_radius=10)
-        
-        header_rect = pygame.Rect(pos[0] - block_w//2, pos[1] - block_h//2, block_w, 28)
-        pygame.draw.rect(screen, color, header_rect, border_top_left_radius=10, border_top_right_radius=10)
-        
-        text = font.render(name, True, (255, 255, 255))
-        screen.blit(text, (pos[0] - text.get_width()//2, pos[1] - block_h//2 + 2))
-        
-        stext = small_font.render(status, True, (200, 220, 255) if status != "IDLE" else (100, 110, 120))
-        screen.blit(stext, (pos[0] - stext.get_width()//2, pos[1] - 15))
-            
-        mod = active_module.get(name, "")
+            last_result       = f"HTTP {resp.status_code}"
+            last_result_color = A_RED
+    except Exception as exc:
+        last_result       = f"Error: {str(exc)[:55]}"
+        last_result_color = A_RED
+
+# ─────────────────────────────────────────────
+#  SERVICE CONTROL
+# ─────────────────────────────────────────────
+PROJ_DIR = "/home/folium/Documents/Kafka/proj_without_kafka"
+SVC_LIST  = ["service_a", "service_b", "service_c"]
+SVC_LABEL = ["Service A :5000", "Service B :5002", "Service C :5003"]
+svc_states = {s: True for s in SVC_LIST}
+
+
+def toggle_service(svc: str):
+    is_up = svc_states.get(svc, True)
+    action = "stop" if is_up else "start"
+    try:
+        subprocess.Popen(["docker-compose", action, svc], cwd=PROJ_DIR,
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        svc_states[svc] = not is_up
+        with lock:
+            _append_log(f"[CTRL] {svc} {'STOPPED' if is_up else 'STARTED'}", A_YEL)
+    except Exception as exc:
+        with lock:
+            _append_log(f"[CTRL ERR] {exc}", A_RED)
+
+# ─────────────────────────────────────────────
+#  TEXT INPUT
+# ─────────────────────────────────────────────
+class TextInput:
+    def __init__(self, x, y, w, h):
+        self.rect   = pygame.Rect(x, y, w, h)
+        self.text   = ""
+        self.active = False
+        self._tick  = 0
+        self._cvis  = True
+
+    def handle(self, event):
+        if event.type == pygame.MOUSEBUTTONDOWN:
+            self.active = self.rect.collidepoint(event.pos)
+        if event.type == pygame.KEYDOWN and self.active:
+            if event.key == pygame.K_BACKSPACE:
+                self.text = self.text[:-1]
+            elif event.key not in (pygame.K_RETURN, pygame.K_KP_ENTER):
+                self.text += event.unicode
+
+    def draw(self, surf):
+        self._tick += 1
+        if self._tick > 30:
+            self._cvis = not self._cvis
+            self._tick = 0
+
+        bc = A_BLUE if self.active else BORDER
+        pygame.draw.rect(surf, (20, 25, 35), self.rect, border_radius=8)
+        pygame.draw.rect(surf, bc, self.rect, width=2, border_radius=8)
+
+        txt  = self.text or "Type your message here…"
+        col  = WHITE if self.text else GRAY
+        surf_t = F_BODY.render(txt, True, col)
+        surf.blit(surf_t, (self.rect.x + 12,
+                            self.rect.centery - surf_t.get_height() // 2))
+
+        if self.active and self._cvis and self.text:
+            cx = self.rect.x + 12 + surf_t.get_width() + 2
+            cy = self.rect.centery - 10
+            pygame.draw.line(surf, WHITE, (cx, cy), (cx, cy + 20), 2)
+
+# ─────────────────────────────────────────────
+#  DRAWING HELPERS (all take snapshot data — NO shared state)
+# ─────────────────────────────────────────────
+def draw_grid():
+    for x in range(0, MAIN_W, 40):
+        pygame.draw.line(screen, GRID_C, (x, 0), (x, NODE_H + CTRL_H))
+    for y in range(0, NODE_H + CTRL_H, 40):
+        pygame.draw.line(screen, GRID_C, (0, y), (MAIN_W, y))
+
+
+def draw_arrow(color, start, end, width=2, sz=9):
+    pygame.draw.line(screen, color, start, end, width)
+    dx, dy = end[0] - start[0], end[1] - start[1]
+    dist   = math.hypot(dx, dy)
+    if dist == 0:
+        return
+    ux, uy = dx / dist, dy / dist
+    px, py = -uy, ux
+    b1 = (end[0] - ux*sz + px*sz*0.5, end[1] - uy*sz + py*sz*0.5)
+    b2 = (end[0] - ux*sz - px*sz*0.5, end[1] - uy*sz - py*sz*0.5)
+    pygame.draw.polygon(screen, color, [end, b1, b2])
+
+
+def draw_connections():
+    pairs = [("USER","Service_A"), ("Service_A","Service_B"), ("Service_B","Service_C")]
+    for a, b in pairs:
+        ax, ay = NODES[a]
+        bx, by = NODES[b]
+        draw_arrow(A_GRN,  (ax + NW//2, ay - 14), (bx - NW//2, by - 14))
+        draw_arrow(A_RED,  (bx - NW//2, by + 14), (ax + NW//2, ay + 14))
+
+    # Label on first segment only
+    mx = (NODES["USER"][0] + NODES["Service_A"][0]) // 2
+    rl = F_TINY.render("REQ →", True, A_GRN)
+    rr = F_TINY.render("← RESP", True, A_RED)
+    screen.blit(rl, (mx - rl.get_width()//2, NY - 32))
+    screen.blit(rr, (mx - rr.get_width()//2, NY + 20))
+
+
+def draw_nodes(fs: FrameState, mouse_pos):
+    hover = None
+    t = time.time()
+    for name, pos in NODES.items():
+        status = fs.node_status.get(name, "IDLE")
+        rect   = pygame.Rect(pos[0]-NW//2, pos[1]-NH//2, NW, NH)
+
+        if status == "PROCESSING":
+            pulse  = (math.sin(t * 2.5) + 1) / 2
+            bdr    = (int(220 + 35*pulse), int(160 + 50*pulse), 0)
+        elif status == "WAITING":
+            pulse  = (math.sin(t * 3.0) + 1) / 2
+            bdr    = (int(130 + 40*pulse), int(70 + 30*pulse), 255)
+        else:
+            bdr    = IDLE_C
+
+        # Shadow
+        pygame.draw.rect(screen, (6,8,12),
+                         (rect.x+5, rect.y+5, NW, NH), border_radius=12)
+        pygame.draw.rect(screen, (22,28,40), rect, border_radius=12)
+        pygame.draw.rect(screen, bdr, rect, width=3, border_radius=12)
+
+        # Header
+        hdr = pygame.Rect(rect.x, rect.y, NW, 32)
+        pygame.draw.rect(screen, bdr, hdr,
+                         border_top_left_radius=12, border_top_right_radius=12)
+
+        ns = F_NODE.render(name, True, WHITE)
+        screen.blit(ns, (rect.centerx - ns.get_width()//2, rect.y + 6))
+
+        sc = A_YEL if status == "PROCESSING" else A_PUR if status == "WAITING" else GRAY
+        ss = F_SM.render(status, True, sc)
+        screen.blit(ss, (rect.centerx - ss.get_width()//2, rect.y + 36))
+
+        mod = fs.active_module.get(name, "")
         if mod and status != "IDLE":
-            mod_surface = small_font.render(mod, True, (20, 20, 20))
-            box_rect = pygame.Rect(pos[0] - mod_surface.get_width()//2 - 6, pos[1] + 5, mod_surface.get_width() + 12, 22)
-            pygame.draw.rect(screen, (120, 255, 120), box_rect, border_radius=4)
-            screen.blit(mod_surface, (pos[0] - mod_surface.get_width()//2, pos[1] + 7))
+            ms   = F_SM.render(mod, True, (10,20,10))
+            pill = pygame.Rect(rect.centerx - ms.get_width()//2 - 6,
+                               rect.y + 55, ms.get_width()+12, 20)
+            pygame.draw.rect(screen, A_GRN, pill, border_radius=5)
+            screen.blit(ms, (rect.centerx - ms.get_width()//2, rect.y + 57))
 
-        req_id = active_req_id.get(name, "")
-        if req_id and status != "IDLE":
-            req_text = small_font.render(req_id, True, (255, 200, 100))
-            screen.blit(req_text, (pos[0] - req_text.get_width()//2, pos[1] + 32))
-        
-    # Update and draw packets
-    with lock:
-        for p in packets:
-            s_pos = nodes.get(p["start"])
-            e_pos = nodes.get(p["end"])
-            if not s_pos or not e_pos:
-                continue
-                
-            # Offset based on type
-            offset = -10 if p["type"] == "req" else 10
-            
-            x = s_pos[0] + (e_pos[0] - s_pos[0]) * p["progress"]
-            y = (s_pos[1] + offset) + (e_pos[1] - s_pos[1]) * p["progress"]
-            
-            p["history"].append((x, y))
-            if len(p["history"]) > 30:
-                p["history"].pop(0)
-                
-            if len(p["history"]) > 1:
-                for i in range(len(p["history"]) - 1):
-                    alpha = i / len(p["history"])
-                    t_color = [int(c * alpha) for c in p["color"]]
-                    pygame.draw.line(screen, t_color, p["history"][i], p["history"][i+1], max(1, int(4 * alpha)))
+        rid = fs.active_req_id.get(name, "")
+        if rid and status != "IDLE":
+            rs = F_TINY.render(rid[-10:], True, A_YEL)
+            screen.blit(rs, (rect.centerx - rs.get_width()//2, rect.y + 80))
 
-            p["progress"] += 0.005
-            if p["progress"] >= 1.0:
-                p["progress"] = 1.0
-            
-            packet_rect = pygame.Rect(int(x) - 8, int(y) - 8, 16, 16)
-            pygame.draw.rect(screen, p["color"], packet_rect, border_radius=3)
-            
-            req_id = p.get("req_id", "")
-            if req_id and req_id != "UNKNOWN":
-                p_text = small_font.render(req_id, True, (255, 255, 255))
-                screen.blit(p_text, (int(x) - p_text.get_width()//2, int(y) - 25))
-                
-        packets = [p for p in packets if p["progress"] < 1.0]
+        port = NODE_PORTS.get(name, "")
+        if port:
+            ps = F_TINY.render(f":{port}", True, GRAY)
+            screen.blit(ps, (rect.centerx - ps.get_width()//2, rect.bottom + 5))
 
-    # Draw Input Area
-    pygame.draw.line(screen, (50, 55, 65), (0, 600), (WIDTH, 600), 2)
-    label = font.render("Test Your Pipeline:", True, (255, 255, 255))
-    screen.blit(label, (400, 615))
-    
+        if rect.collidepoint(mouse_pos):
+            hover = name
+
+    return hover
+
+
+def draw_tooltip(hover_name, mouse_pos):
+    if not hover_name:
+        return
+    desc    = NODE_DESC.get(hover_name, "")
+    lines   = desc.split("\n")
+    pad, lh = 10, 20
+    tw      = max(F_SM.size(ln)[0] for ln in lines) + pad*2
+    th      = len(lines) * lh + pad*2
+    tx      = min(mouse_pos[0] + 14, MAIN_W - tw - 4)
+    ty      = max(4, min(mouse_pos[1] - th//2, HEIGHT - th - 4))
+
+    pygame.draw.rect(screen, BORDER,    (tx-2, ty-2, tw+4, th+4), border_radius=6)
+    pygame.draw.rect(screen, (28,34,46),(tx,   ty,   tw,   th),   border_radius=6)
+    for i, ln in enumerate(lines):
+        ls = F_SM.render(ln, True, L_GRAY)
+        screen.blit(ls, (tx + pad, ty + pad + i*lh))
+
+
+def draw_packets_snap(snap: list):
+    """Render pre-computed packet snapshot — zero lock needed."""
+    for p in snap:
+        trail = p["trail"]
+        if len(trail) > 1:
+            for i in range(len(trail) - 1):
+                alpha   = i / len(trail)
+                tc      = tuple(int(c * alpha) for c in p["color"])
+                pygame.draw.line(screen, tc, trail[i], trail[i+1],
+                                 max(1, int(3 * alpha)))
+        cx, cy = p["cx"], p["cy"]
+        if cx == 0 and cy == 0:
+            continue
+        pygame.draw.circle(screen, p["color"], (cx, cy), 9)
+        pygame.draw.circle(screen, WHITE,      (cx, cy), 9, 1)
+        rid = p["req_id"]
+        if rid and rid != "UNKNOWN":
+            rs = F_TINY.render(rid[-8:], True, WHITE)
+            screen.blit(rs, (cx - rs.get_width()//2, cy - 22))
+
+
+def draw_log_panel(log_slice: list):
+    px = MAIN_W
+    pygame.draw.rect(screen, PANEL_BG, (px, 0, LOG_W, HEIGHT))
+    pygame.draw.line(screen, BORDER, (px, 0), (px, HEIGHT), 2)
+
+    # Title
+    pygame.draw.rect(screen, (20,26,36), (px, 0, LOG_W, 40))
+    ts = F_BODY.render("Event Log", True, A_BLUE)
+    screen.blit(ts, (px + LOG_W//2 - ts.get_width()//2, 10))
+
+    y = 48
+    for ts_str, msg, color in log_slice:
+        tss = F_TINY.render(ts_str, True, (80,90,110))
+        screen.blit(tss, (px + 6, y))
+        ms  = F_TINY.render(msg[:42], True, color)
+        screen.blit(ms, (px + 60, y))
+        y += 18
+        if y > HEIGHT - 180:
+            break
+
+    # Legend
+    leg_y = HEIGHT - 168
+    pygame.draw.line(screen, BORDER, (px, leg_y-6), (px+LOG_W, leg_y-6), 1)
+    screen.blit(F_SM.render("LEGEND", True, GRAY), (px+8, leg_y))
+    leg_y += 22
+    for col, txt in [
+        (A_GRN,  "Request packet"),
+        (A_RED,  "Response packet"),
+        (A_YEL,  "Processing node"),
+        (A_PUR,  "Waiting node"),
+        (IDLE_C, "Idle node"),
+    ]:
+        pygame.draw.circle(screen, col, (px+14, leg_y+7), 6)
+        screen.blit(F_SM.render(txt, True, L_GRAY), (px+26, leg_y))
+        leg_y += 20
+
+
+def draw_ctrl_strip(mouse_pos):
+    cy = NODE_H
+    pygame.draw.rect(screen, (16,20,28), (0, cy, MAIN_W, CTRL_H))
+    pygame.draw.line(screen, BORDER, (0, cy), (MAIN_W, cy), 1)
+    pygame.draw.line(screen, BORDER, (0, cy+CTRL_H), (MAIN_W, cy+CTRL_H), 1)
+    screen.blit(F_SM.render("Service Controls:", True, GRAY), (14, cy + 26))
+
+    bw, bh = 185, 38
+    gap    = 18
+    block  = len(SVC_LIST)*bw + (len(SVC_LIST)-1)*gap
+    sx     = (MAIN_W - block) // 2
+    rects  = {}
+    for i, svc in enumerate(SVC_LIST):
+        rx = sx + i*(bw+gap)
+        ry = cy + (CTRL_H - bh)//2
+        r  = pygame.Rect(rx, ry, bw, bh)
+        rects[svc] = r
+        up   = svc_states.get(svc, True)
+        hov  = r.collidepoint(mouse_pos)
+        bgc  = (30,100,55) if up else (80,30,30)
+        if hov:
+            bgc = (40,140,75) if up else (110,40,40)
+        brc  = A_GRN if up else A_RED
+        lbl  = f"{'■' if up else '▶'} {SVC_LABEL[i]}  {'STOP' if up else 'START'}"
+        pygame.draw.rect(screen, bgc, r, border_radius=7)
+        pygame.draw.rect(screen, brc, r, width=2, border_radius=7)
+        ls = F_SM.render(lbl, True, WHITE)
+        screen.blit(ls, (r.centerx - ls.get_width()//2, r.centery - ls.get_height()//2))
+    return rects
+
+
+def draw_input_area(mouse_pos, input_box, send_rect, clear_rect, fs: FrameState):
+    ay = NODE_H + CTRL_H
+    pygame.draw.rect(screen, (14,18,26), (0, ay, MAIN_W, INPUT_H))
+    pygame.draw.line(screen, BORDER, (0, ay), (MAIN_W, ay), 1)
+
+    screen.blit(F_BODY.render("Test Your Pipeline:", True, L_GRAY), (int(MAIN_W*0.10), ay+6))
     input_box.draw(screen)
-    
-    # Send Button
-    send_btn = pygame.Rect(810, 650, 100, 40)
-    btn_color = (60, 180, 100) if send_btn.collidepoint(mouse_pos) else (40, 140, 80)
-    pygame.draw.rect(screen, btn_color, send_btn, border_radius=5)
-    btn_txt = small_font.render("SEND", True, (255, 255, 255))
-    screen.blit(btn_txt, (send_btn.centerx - btn_txt.get_width()//2, send_btn.centery - btn_txt.get_height()//2))
+
+    sc = (50,180,100) if send_rect.collidepoint(mouse_pos) else (35,140,75)
+    pygame.draw.rect(screen, sc, send_rect, border_radius=8)
+    pygame.draw.rect(screen, A_GRN, send_rect, width=2, border_radius=8)
+    ss = F_BODY.render("SEND", True, WHITE)
+    screen.blit(ss, (send_rect.centerx - ss.get_width()//2,
+                     send_rect.centery - ss.get_height()//2))
+
+    cc = (70,30,30) if clear_rect.collidepoint(mouse_pos) else (50,22,22)
+    pygame.draw.rect(screen, cc, clear_rect, border_radius=8)
+    pygame.draw.rect(screen, A_RED, clear_rect, width=2, border_radius=8)
+    cs = F_BODY.render("CLEAR", True, WHITE)
+    screen.blit(cs, (clear_rect.centerx - cs.get_width()//2,
+                     clear_rect.centery - cs.get_height()//2))
 
     if last_result:
-        res_txt = small_font.render(last_result, True, last_result_color)
-        screen.blit(res_txt, (WIDTH//2 - res_txt.get_width()//2, 710))
+        rs = F_BODY.render(last_result, True, last_result_color)
+        screen.blit(rs, (int(MAIN_W*0.10), ay + 80))
 
-    pygame.display.flip()
-    clock.tick(60)
+    # Emotion stats
+    sx = int(MAIN_W * 0.48)
+    emo_row = [
+        ("Happy",  A_GRN),
+        ("Sad",    A_BLUE),
+        ("Angry",  A_RED),
+    ]
+    for emo, col in emo_row:
+        label = f"{emo}: {fs.emotion_counts.get(emo, 0)}"
+        es    = F_BODY.render(label, True, col)
+        screen.blit(es, (sx, ay + 80))
+        sx += es.get_width() + 30
 
-pygame.quit()
-sys.exit()
+
+def draw_title_bar():
+    pygame.draw.rect(screen, HDR_DARK, (0, 0, MAIN_W, 36))
+    pygame.draw.line(screen, BORDER, (0, 36), (MAIN_W, 36), 1)
+    title = F_TITLE.render("Microservices Request Debugger  —  Live View", True, A_BLUE)
+    screen.blit(title, (MAIN_W//2 - title.get_width()//2, 7))
+    ct = F_SM.render(time.strftime("%H:%M:%S"), True, GRAY)
+    screen.blit(ct, (MAIN_W - ct.get_width() - 12, 11))
+
+
+# ─────────────────────────────────────────────
+#  UI ELEMENT POSITIONS
+# ─────────────────────────────────────────────
+_ib_y   = NODE_H + CTRL_H + 28
+input_box  = TextInput(int(MAIN_W*0.10), _ib_y, int(MAIN_W*0.52), 40)
+SEND_RECT  = pygame.Rect(int(MAIN_W*0.64), _ib_y, 110, 40)
+CLEAR_RECT = pygame.Rect(int(MAIN_W*0.64) + 120, _ib_y, 90, 40)
+
+# ─────────────────────────────────────────────
+#  GRACEFUL EXIT
+# ─────────────────────────────────────────────
+running = True
+
+
+def _quit(sig, frame):
+    global running
+    running = False
+
+
+signal.signal(signal.SIGINT,  _quit)
+signal.signal(signal.SIGTERM, _quit)
+
+# ─────────────────────────────────────────────
+#  MAIN LOOP
+# ─────────────────────────────────────────────
+clock      = pygame.time.Clock()
+log_scroll = 0
+ctrl_rects: dict = {}
+hover_node = None
+
+try:
+    while running:
+        # ── 1. Process events ────────────────
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                running = False
+            elif event.type == pygame.KEYDOWN:
+                if event.key == pygame.K_ESCAPE:
+                    running = False
+                elif event.key in (pygame.K_RETURN, pygame.K_KP_ENTER):
+                    if input_box.active and input_box.text.strip():
+                        threading.Thread(target=send_request,
+                                         args=(input_box.text,),
+                                         daemon=True).start()
+            elif event.type == pygame.MOUSEBUTTONDOWN:
+                if SEND_RECT.collidepoint(event.pos) and input_box.text.strip():
+                    threading.Thread(target=send_request,
+                                     args=(input_box.text,),
+                                     daemon=True).start()
+                if CLEAR_RECT.collidepoint(event.pos):
+                    input_box.text = ""
+                    last_result    = ""
+                for svc, r in ctrl_rects.items():
+                    if r.collidepoint(event.pos):
+                        threading.Thread(target=toggle_service,
+                                         args=(svc,), daemon=True).start()
+            elif event.type == pygame.MOUSEWHEEL:
+                if pygame.mouse.get_pos()[0] > MAIN_W:
+                    log_scroll = max(0, min(
+                        log_scroll - event.y,
+                        max(0, len(event_log) - LOG_VISIBLE)
+                    ))
+            input_box.handle(event)
+
+        # ── 2. ONE snapshot (only lock here) ──
+        fs = make_snapshot(log_scroll)
+
+        mouse_pos = pygame.mouse.get_pos()
+
+        # ── 3. Render everything lock-free ───
+        screen.fill(BG)
+        draw_grid()
+        draw_title_bar()
+        draw_connections()
+        hover_node = draw_nodes(fs, mouse_pos)
+        draw_packets_snap(fs.packet_snap)
+        ctrl_rects = draw_ctrl_strip(mouse_pos)
+        draw_input_area(mouse_pos, input_box, SEND_RECT, CLEAR_RECT, fs)
+        draw_log_panel(fs.log_slice)
+        draw_tooltip(hover_node, mouse_pos)
+
+        pygame.display.flip()
+        clock.tick(30)           # 30 fps is plenty for a teaching tool
+
+except Exception as exc:
+    print(f"[DEBUGGER] Fatal error: {exc}")
+    import traceback
+    traceback.print_exc()
+finally:
+    pygame.quit()
+    sys.exit()
