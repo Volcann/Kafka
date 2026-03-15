@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Sentiment Dashboard</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.0.1/socket.io.js"></script>
+    <style>
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; text-align: center; margin-top: 50px; background-color: #f4f7f6; color: #333; }
+        .dashboard { display: flex; justify-content: center; gap: 20px; flex-wrap: wrap; }
+        .count-box { 
+            background: white; 
+            padding: 30px; 
+            border-radius: 12px; 
+            width: 150px; 
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1); 
+            font-size: 24px; 
+            font-weight: bold;
+        }
+        #happy { color: #2e7d32; border-bottom: 5px solid #2e7d32; }
+        #sad { color: #757575; border-bottom: 5px solid #757575; }
+        #angry { color: #c62828; border-bottom: 5px solid #c62828; }
+        .number { display: block; font-size: 36px; margin-top: 10px; }
+    </style>
+</head>
+<body>
+    <h1>Sentiment Analytics live updates</h1>
+    <p>Incoming sentiments are counted in real-time.</p>
+    <div class="dashboard">
+        <div class="count-box" id="happy">Happy
+            <span class="number" id="happy-count">0</span>
+        </div>
+        <div class="count-box" id="sad">Sad
+            <span class="number" id="sad-count">0</span>
+        </div>
+        <div class="count-box" id="angry">Angry
+            <span class="number" id="angry-count">0</span>
+        </div>
+    </div>
+    <script>
+        var socket = io();
+        socket.on('update_counts', function(msg) {
+            document.getElementById('happy-count').innerText = msg.Happy || 0;
+            document.getElementById('sad-count').innerText = msg.Sad || 0;
+            document.getElementById('angry-count').innerText = msg.Angry || 0;
+        });
+    </script>
+</body>
+</html>

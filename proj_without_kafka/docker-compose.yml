@@ -1,0 +1,38 @@
+version: '3.8'
+
+services:
+  service_a:
+    build:
+      context: .
+      dockerfile: ./service_a/Dockerfile
+    ports:
+      - "5000:5000"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      - service_b
+    environment:
+      - PYTHONUNBUFFERED=1
+
+  service_b:
+    build:
+      context: .
+      dockerfile: ./service_b/Dockerfile
+    ports:
+      - "5002:5002"
+    depends_on:
+      - service_c
+    volumes:
+      - ./data:/app/data
+    environment:
+      - PYTHONUNBUFFERED=1
+
+  service_c:
+    build:
+      context: .
+      dockerfile: ./service_c/Dockerfile
+    ports:
+      - "5003:5003"
+    environment:
+      - PYTHONUNBUFFERED=1
+
