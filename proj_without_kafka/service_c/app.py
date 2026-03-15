@@ -28,6 +28,9 @@ def index():
 
 @app.route('/count', methods=['POST'])
 def add_count():
+    request_id = request.headers.get('X-Request-ID', 'REQ-UNKNOWN')
+    print(f"{request_id} - Updating counters")
+
     debug_event("Service_B", "Service_C", "REQ_IN", module="Dashboard")
     data = request.json
     if not data or 'emotion' not in data:
@@ -41,6 +44,7 @@ def add_count():
     else:
         counts[emotion] = 1
         
+    print(f"{request_id} - Broadcasting WebSocket update")
     socketio.emit('update_counts', counts)
     
     debug_event("Service_C", "Service_B", "RESP_OUT", module="Success")

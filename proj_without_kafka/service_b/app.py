@@ -32,6 +32,9 @@ def debug_event(src, dst, action, module=None):
 
 @app.route('/analyze', methods=['POST'])
 def analyze():
+    request_id = request.headers.get('X-Request-ID', 'REQ-UNKNOWN')
+    print(f"{request_id} - Running sentiment analysis")
+
     debug_event("Service_A", "Service_B", "REQ_IN", module="Sentiment Analysis")
     data = request.json
     if not data or 'text' not in data:
@@ -55,6 +58,7 @@ def analyze():
         time.sleep(3)
             
     try:
+        print(f"{request_id} - Saving to database")
         debug_event("Service_B", "Service_B", "PROCESSING", module="DB Storage")
         conn = sqlite3.connect(DB_FILE)
         c = conn.cursor()
@@ -67,8 +71,10 @@ def analyze():
         return jsonify({"error": str(e), "message": "Database error"}), 500
 
     try:
+        print(f"{request_id} - Sending result to Service C")
         debug_event("Service_B", "Service_C", "REQ_OUT", module="Dashboard Update")
-        response = requests.post(SERVICE_C_URL, json={'emotion': emotion}, timeout=10)
+        headers = {'X-Request-ID': request_id}
+        response = requests.post(SERVICE_C_URL, json={'emotion': emotion}, headers=headers, timeout=10)
         debug_event("Service_B", "Service_C", "RESP_IN", module="Dashboard Update")
         
         debug_event("Service_B", "Service_A", "RESP_OUT", module="Success")

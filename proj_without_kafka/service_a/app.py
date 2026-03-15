@@ -2,6 +2,7 @@ from flask import Flask, request, jsonify
 import requests
 import socket
 import json
+import uuid
 
 app = Flask(__name__)
 
@@ -20,6 +21,13 @@ def debug_event(src, dst, action, module=None):
 
 @app.route('/api/post', methods=['POST'])
 def gateway_post():
+    request_id = request.headers.get('X-Request-ID')
+    if not request_id:
+        request_id = f"REQ-{uuid.uuid4().hex[:6]}"
+        
+    print(f"{request_id} - Received request")
+    print(f"{request_id} - Validating header")
+
     debug_event("USER", "Service_A", "REQ_OUT", module="Gateway")
     debug_event("USER", "Service_A", "REQ_IN", module="Gateway")
     
@@ -39,8 +47,10 @@ def gateway_post():
     
     # Forward to Service B synchronously
     try:
+        print(f"{request_id} - Forwarding to Service B")
         debug_event("Service_A", "Service_B", "REQ_OUT", module="Forwarding")
-        response = requests.post(SERVICE_B_URL, json=data, timeout=10)
+        headers = {'X-Request-ID': request_id}
+        response = requests.post(SERVICE_B_URL, json=data, headers=headers, timeout=10)
         debug_event("Service_A", "Service_B", "RESP_IN", module="Forwarding")
         
         debug_event("Service_A", "USER", "RESP_OUT", module="Success")
