@@ -3,8 +3,12 @@ from flask_socketio import SocketIO
 import socket
 import json
 
+import os
+
 app = Flask(__name__)
 socketio = SocketIO(app, cors_allowed_origins="*")
+
+DEBUGGER_HOST = os.environ.get("DEBUGGER_HOST", "host.docker.internal")
 
 counts = {
     "Happy": 0,
@@ -12,13 +16,13 @@ counts = {
     "Angry": 0
 }
 
-def debug_event(src, dst, action, module=None):
+def debug_event(src, dst, action, request_id="UNKNOWN", module=None):
     try:
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        payload = {"source": src, "target": dst, "action": action}
+        payload = {"source": src, "target": dst, "action": action, "request_id": request_id}
         if module:
             payload["module"] = module
-        sock.sendto(json.dumps(payload).encode('utf-8'), ("host.docker.internal", 9999))
+        sock.sendto(json.dumps(payload).encode('utf-8'), (DEBUGGER_HOST, 9999))
     except:
         pass
 
@@ -31,10 +35,10 @@ def add_count():
     request_id = request.headers.get('X-Request-ID', 'REQ-UNKNOWN')
     print(f"{request_id} - Updating counters")
 
-    debug_event("Service_B", "Service_C", "REQ_IN", module="Dashboard")
+    debug_event("Service_B", "Service_C", "REQ_IN", request_id, module="Dashboard")
     data = request.json
     if not data or 'emotion' not in data:
-        debug_event("Service_C", "Service_B", "RESP_OUT", module="Error")
+        debug_event("Service_C", "Service_B", "RESP_OUT", request_id, module="Error")
         return jsonify({"error": "No emotion provided"}), 400
 
     emotion = data.get('emotion')
@@ -47,7 +51,7 @@ def add_count():
     print(f"{request_id} - Broadcasting WebSocket update")
     socketio.emit('update_counts', counts)
     
-    debug_event("Service_C", "Service_B", "RESP_OUT", module="Success")
+    debug_event("Service_C", "Service_B", "RESP_OUT", request_id, module="Success")
     return jsonify({"status": "success", "counts": counts}), 200
 
 if __name__ == '__main__':
