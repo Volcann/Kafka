@@ -1,9 +1,10 @@
-from flask import Flask, render_template, jsonify
+from flask import Flask, render_template
 from flask_socketio import SocketIO
 import socket
 import json
 import os
 import threading
+import time
 from confluent_kafka import Consumer, KafkaError
 
 app = Flask(__name__)
@@ -18,19 +19,27 @@ counts = {
     "Angry": 0
 }
 
+
 def debug_event(src, dst, action, request_id="UNKNOWN", module=None):
     try:
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        payload = {"source": src, "target": dst, "action": action, "request_id": request_id}
+        payload = {
+            "source": src,
+            "target": dst,
+            "action": action,
+            "request_id": request_id
+        }
         if module:
             payload["module"] = module
         sock.sendto(json.dumps(payload).encode('utf-8'), (DEBUGGER_HOST, 9999))
-    except:
+    except Exception:
         pass
+
 
 @app.route('/')
 def index():
     return render_template('index.html')
+
 
 def kafka_consumer_thread():
     consumer_conf = {
@@ -52,6 +61,10 @@ def kafka_consumer_thread():
             if msg.error():
                 if msg.error().code() == KafkaError._PARTITION_EOF:
                     continue
+                elif msg.error().code() == KafkaError.UNKNOWN_TOPIC_OR_PART:
+                    print(f"Topic not ready yet: {msg.error()}")
+                    time.sleep(2)
+                    continue
                 else:
                     print(f"Kafka error: {msg.error()}")
                     break
@@ -70,8 +83,11 @@ def kafka_consumer_thread():
                 
             print(f"{request_id} - Broadcasting WebSocket update")
             socketio.emit('update_counts', counts)
-            
-            debug_event("Service_C", "Broker", "RESP_OUT", request_id, module="Dashboard Update")
+
+            debug_event(
+                "Service_C", "Broker", "RESP_OUT",
+                request_id, module="Dashboard Update"
+            )
 
     except Exception as e:
         print(f"Error in Kafka consumer thread: {e}")

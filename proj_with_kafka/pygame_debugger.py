@@ -140,7 +140,6 @@ packets: list = []
 ripples: list = []
 popups: list = []
 event_log: list = []
-emotion_counts = {"Happy": 0, "Sad": 0, "Angry": 0}
 
 @dataclass
 class Packet:
@@ -159,7 +158,6 @@ class FrameState:
     node_status: dict
     active_module: dict
     active_req_id: dict
-    emotion_counts: dict
     log_slice: list
     packet_snap: list
     ripples_snap: list
@@ -172,7 +170,8 @@ def make_snapshot(log_scroll: int) -> FrameState:
         for p in packets:
             if p.shatter:
                 p.alpha -= 10
-                if p.alpha <= 0: p.alive = False
+                if p.alpha <= 0:
+                    p.alive = False
             else:
                 p.progress += 0.008
                 sp = NODES[p.start]
@@ -190,7 +189,8 @@ def make_snapshot(log_scroll: int) -> FrameState:
                 cx = int(sp[0] + (ep[0] - sp[0]) * p.progress)
                 cy = int(sp[1] + (ep[1] - sp[1]) * p.progress)
                 p.trail.append((cx, cy))
-                if len(p.trail) > 15: p.trail.pop(0)
+                if len(p.trail) > 15:
+                    p.trail.pop(0)
 
                 if p.progress >= 1.0:
                     ripples.append(Ripple(ep[0], ep[1], p.color))
@@ -217,7 +217,6 @@ def make_snapshot(log_scroll: int) -> FrameState:
             node_status    = dict(node_status),
             active_module  = dict(active_module),
             active_req_id  = dict(active_req_id),
-            emotion_counts = dict(emotion_counts),
             log_slice      = list(event_log[-(18 + log_scroll):][:18]),
             packet_snap    = [{"trail": list(p.trail), "color": p.color, "req_id": p.req_id, "alpha": p.alpha} for p in packets],
             ripples_snap   = [{"x": r.x, "y": r.y, "radius": r.radius, "alpha": r.alpha, "color": r.color} for r in ripples],
@@ -279,8 +278,11 @@ def udp_server():
         try:
             data, _ = sock.recvfrom(4096)
             ev = json.loads(data.decode("utf-8"))
-            with lock: process_event(ev)
-        except: pass
+            with lock:
+                process_event(ev)
+        except Exception:
+            pass
+
 
 threading.Thread(target=udp_server, daemon=True).start()
 
@@ -390,13 +392,6 @@ def draw_hud(fs: FrameState, input_box):
     sy = NODE_AREA_H
     pygame.draw.rect(screen, COLOR_BG_DEEP, (0, sy, MAIN_W, HEIGHT - sy))
     
-    sy_stats = NODE_AREA_H + 170
-    sx = 40
-    for emo, col in [("Happy", COLOR_NEON_GREEN), ("Sad", COLOR_NEON_BLUE), ("Angry", COLOR_NEON_RED)]:
-        count = fs.emotion_counts.get(emo, 0)
-        txt = F_BODY.render(f"{emo}: {count}", True, col)
-        screen.blit(txt, (sx, sy_stats))
-        sx += 180
 
 # ─────────────────────────────────────────────
 #  MAIN LOOP & UI CLASSES
@@ -408,11 +403,15 @@ class TextInput:
         self.active = False
 
     def handle(self, event):
-        if event.type == pygame.MOUSEBUTTONDOWN: self.active = self.rect.collidepoint(event.pos)
+        if event.type == pygame.MOUSEBUTTONDOWN:
+            self.active = self.rect.collidepoint(event.pos)
         if event.type == pygame.KEYDOWN and self.active:
-            if event.key == pygame.K_BACKSPACE: self.text = self.text[:-1]
-            elif event.key == pygame.K_RETURN: return True
-            else: self.text += event.unicode
+            if event.key == pygame.K_BACKSPACE:
+                self.text = self.text[:-1]
+            elif event.key == pygame.K_RETURN:
+                return True
+            else:
+                self.text += event.unicode
         return False
 
     def draw(self, surf):

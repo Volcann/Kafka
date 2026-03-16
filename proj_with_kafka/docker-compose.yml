@@ -41,6 +41,8 @@ services:
       dockerfile: ./service_b/Dockerfile
     ports:
       - "5002:5002"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     depends_on:
       - kafka
     volumes:
@@ -55,8 +57,12 @@ services:
       dockerfile: ./service_c/Dockerfile
     ports:
       - "5003:5003"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     depends_on:
       - kafka
+    volumes:
+      - ./service_c/templates:/app/templates
     environment:
       - PYTHONUNBUFFERED=1
       - KAFKA_BOOTSTRAP_SERVERS=kafka:29092

@@ -106,6 +106,10 @@ def main():
             if msg.error():
                 if msg.error().code() == KafkaError._PARTITION_EOF:
                     continue
+                elif msg.error().code() == KafkaError.UNKNOWN_TOPIC_OR_PART:
+                    print(f"Topic not ready yet: {msg.error()}")
+                    time.sleep(2)
+                    continue
                 else:
                     print(f"Kafka error: {msg.error()}")
                     break

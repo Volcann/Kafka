@@ -1,46 +1,113 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <title>Sentiment Dashboard</title>
+    <title>Neon Sentiment Dashboard</title>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.0.1/socket.io.js"></script>
     <style>
-        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; text-align: center; margin-top: 50px; background-color: #f4f7f6; color: #333; }
-        .dashboard { display: flex; justify-content: center; gap: 20px; flex-wrap: wrap; }
-        .count-box { 
-            background: white; 
-            padding: 30px; 
-            border-radius: 12px; 
-            width: 150px; 
-            box-shadow: 0 4px 6px rgba(0,0,0,0.1); 
-            font-size: 24px; 
-            font-weight: bold;
+        :root {
+            --bg: #0d0e12;
+            --card-bg: #1a1c23;
+            --neon-green: #39ff14;
+            --neon-blue: #00d4ff;
+            --neon-red: #ff3131;
         }
-        #happy { color: #2e7d32; border-bottom: 5px solid #2e7d32; }
-        #sad { color: #757575; border-bottom: 5px solid #757575; }
-        #angry { color: #c62828; border-bottom: 5px solid #c62828; }
-        .number { display: block; font-size: 36px; margin-top: 10px; }
+
+        body { 
+            font-family: 'Segoe UI', Roboto, sans-serif; 
+            text-align: center; 
+            background-color: var(--bg); 
+            color: #eee; 
+            margin-top: 50px; 
+        }
+
+        h1 { font-weight: 300; letter-spacing: 1.5px; text-transform: uppercase; }
+        p { color: #888; margin-bottom: 40px; }
+
+        .dashboard { display: flex; justify-content: center; gap: 25px; flex-wrap: wrap; }
+
+        .count-box { 
+            background: var(--card-bg); 
+            padding: 35px; 
+            border-radius: 16px; 
+            width: 160px; 
+            border: 1px solid rgba(255, 255, 255, 0.05);
+            transition: transform 0.2s ease;
+            position: relative;
+        }
+
+        /* Label Styling */
+        .label { font-size: 18px; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 10px; display: block; }
+        .number { display: block; font-size: 42px; font-weight: 900; color: #fff; }
+
+        /* Neon Specific Colors */
+        #happy .label { color: var(--neon-green); }
+        #sad .label { color: var(--neon-blue); }
+        #angry .label { color: var(--neon-red); }
+
+        /* The Neon Pulse Animations */
+        .update-happy { animation: pulse-green 0.6s cubic-bezier(0.4, 0, 0.2, 1); }
+        .update-sad { animation: pulse-blue 0.6s cubic-bezier(0.4, 0, 0.2, 1); }
+        .update-angry { animation: pulse-red 0.6s cubic-bezier(0.4, 0, 0.2, 1); }
+
+        @keyframes pulse-green {
+            0% { box-shadow: 0 0 0 0 rgba(57, 255, 20, 0); transform: scale(1); }
+            50% { box-shadow: 0 0 30px rgba(57, 255, 20, 0.6); transform: scale(1.05); border-color: var(--neon-green); }
+            100% { box-shadow: 0 0 0 0 rgba(57, 255, 20, 0); transform: scale(1); }
+        }
+
+        @keyframes pulse-blue {
+            0% { box-shadow: 0 0 0 0 rgba(0, 212, 255, 0); transform: scale(1); }
+            50% { box-shadow: 0 0 30px rgba(0, 212, 255, 0.6); transform: scale(1.05); border-color: var(--neon-blue); }
+            100% { box-shadow: 0 0 0 0 rgba(0, 212, 255, 0); transform: scale(1); }
+        }
+
+        @keyframes pulse-red {
+            0% { box-shadow: 0 0 0 0 rgba(255, 49, 49, 0); transform: scale(1); }
+            50% { box-shadow: 0 0 30px rgba(255, 49, 49, 0.6); transform: scale(1.05); border-color: var(--neon-red); }
+            100% { box-shadow: 0 0 0 0 rgba(255, 49, 49, 0); transform: scale(1); }
+        }
     </style>
 </head>
 <body>
-    <h1>Sentiment Analytics live updates</h1>
-    <p>Incoming sentiments are counted in real-time.</p>
+    <h1>Live Sentiment Stream</h1>
+    <p>Watching the pulse of the crowd...</p>
+
     <div class="dashboard">
-        <div class="count-box" id="happy">Happy
+        <div class="count-box" id="happy">
+            <span class="label">Happy</span>
             <span class="number" id="happy-count">0</span>
         </div>
-        <div class="count-box" id="sad">Sad
+        <div class="count-box" id="sad">
+            <span class="label">Sad</span>
             <span class="number" id="sad-count">0</span>
         </div>
-        <div class="count-box" id="angry">Angry
+        <div class="count-box" id="angry">
+            <span class="label">Angry</span>
             <span class="number" id="angry-count">0</span>
         </div>
     </div>
+
     <script>
         var socket = io();
+
+        // Helper to trigger the animation
+        function animateBox(id, pulseClass) {
+            const el = document.getElementById(id);
+            el.classList.remove(pulseClass);
+            void el.offsetWidth; // Force CSS reflow to restart animation
+            el.classList.add(pulseClass);
+        }
+
         socket.on('update_counts', function(msg) {
+            // Update the text
             document.getElementById('happy-count').innerText = msg.Happy || 0;
             document.getElementById('sad-count').innerText = msg.Sad || 0;
             document.getElementById('angry-count').innerText = msg.Angry || 0;
+
+            // Trigger the neon glow effect
+            animateBox('happy', 'update-happy');
+            animateBox('sad', 'update-sad');
+            animateBox('angry', 'update-angry');
         });
     </script>
 </body>
