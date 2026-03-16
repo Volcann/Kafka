@@ -27,14 +27,15 @@ pygame.init()
 # ─────────────────────────────────────────────
 #  CONSTANTS & LAYOUT
 # ─────────────────────────────────────────────
-WIDTH, HEIGHT = 1400, 900
+infoObject = pygame.display.Info()
+WIDTH, HEIGHT = infoObject.current_w, infoObject.current_h
 LOG_W         = 340
 MAIN_W        = WIDTH - LOG_W
 NODE_AREA_H   = 600
 CTRL_H        = 80
 INPUT_H       = HEIGHT - NODE_AREA_H - CTRL_H
 
-screen = pygame.display.set_mode((WIDTH, HEIGHT))
+screen = pygame.display.set_mode((WIDTH, HEIGHT), pygame.FULLSCREEN)
 pygame.display.set_caption("Kafka Debugger — Premium Edition")
 
 # ─────────────────────────────────────────────
@@ -114,6 +115,20 @@ class Ripple:
         pygame.draw.circle(s, (*self.color, self.alpha), (self.radius, self.radius), self.radius, 2)
         surf.blit(s, (self.x - self.radius, self.y - self.radius))
 
+class Popup:
+    def __init__(self, x, y, text, color, duration=3.0):
+        self.x, self.y = x, y
+        self.text = text
+        self.color = color
+        self.life = duration
+        self.alive = True
+        self.dy = -0.5
+
+    def update(self):
+        self.life -= 0.02
+        self.y += self.dy
+        if self.life <= 0: self.alive = False
+
 # ─────────────────────────────────────────────
 #  SHARED STATE
 # ─────────────────────────────────────────────
@@ -123,6 +138,7 @@ active_module = {k: ""     for k in NODES}
 active_req_id = {k: ""     for k in NODES}
 packets: list = []
 ripples: list = []
+popups: list = []
 event_log: list = []
 emotion_counts = {"Happy": 0, "Sad": 0, "Angry": 0}
 
@@ -134,6 +150,9 @@ class Packet:
     color: tuple
     progress: float = 0.0
     trail: list = field(default_factory=list)
+    alive: bool = True
+    shatter: bool = False
+    alpha: int = 255
     
 @dataclass
 class FrameState:
@@ -144,29 +163,55 @@ class FrameState:
     log_slice: list
     packet_snap: list
     ripples_snap: list
+    popups_snap: list
 
 def make_snapshot(log_scroll: int) -> FrameState:
     with lock:
         # Update Packets
         alive_packets = []
         for p in packets:
-            p.progress += 0.008
-            sp = NODES[p.start]
-            ep = NODES[p.end]
-            cx = int(sp[0] + (ep[0] - sp[0]) * p.progress)
-            cy = int(sp[1] + (ep[1] - sp[1]) * p.progress)
-            p.trail.append((cx, cy))
-            if len(p.trail) > 15: p.trail.pop(0)
-            if p.progress < 1.0:
-                alive_packets.append(p)
+            if p.shatter:
+                p.alpha -= 10
+                if p.alpha <= 0: p.alive = False
             else:
-                ripples.append(Ripple(ep[0], ep[1], p.color))
+                p.progress += 0.008
+                sp = NODES[p.start]
+                ep = NODES[p.end]
+                
+                target_svc = p.end.lower() if p.end != "Broker" else "kafka"
+                is_off = False
+                if target_svc in svc_states:
+                    is_off = not svc_states[target_svc]
+                
+                if is_off and p.progress > 0.4:
+                    p.shatter = True
+                    popups.append(Popup(ep[0], ep[1]-50, "CONNECTION REFUSED", COLOR_NEON_RED))
+                
+                cx = int(sp[0] + (ep[0] - sp[0]) * p.progress)
+                cy = int(sp[1] + (ep[1] - sp[1]) * p.progress)
+                p.trail.append((cx, cy))
+                if len(p.trail) > 15: p.trail.pop(0)
+
+                if p.progress >= 1.0:
+                    ripples.append(Ripple(ep[0], ep[1], p.color))
+                    if p.end == "Broker":
+                        if not svc_states.get("service_b", True):
+                            popups.append(Popup(ep[0], ep[1]+50, "SAFE IN KAFKA (Queueing for B)", COLOR_NEON_GREEN))
+                        if not svc_states.get("service_c", True):
+                            popups.append(Popup(ep[0], ep[1]+75, "SAFE IN KAFKA (Queueing for C)", COLOR_NEON_YELLOW))
+                    p.alive = False
+            
+            if p.alive: alive_packets.append(p)
         
         packets[:] = alive_packets
 
         # Update Ripples
         for r in ripples: r.update()
         ripples[:] = [r for r in ripples if r.alive]
+        
+        # Update Popups
+        for po in popups: po.update()
+        popups[:] = [po for po in popups if po.alive]
 
         return FrameState(
             node_status    = dict(node_status),
@@ -174,8 +219,9 @@ def make_snapshot(log_scroll: int) -> FrameState:
             active_req_id  = dict(active_req_id),
             emotion_counts = dict(emotion_counts),
             log_slice      = list(event_log[-(18 + log_scroll):][:18]),
-            packet_snap    = [{"trail": list(p.trail), "color": p.color, "req_id": p.req_id} for p in packets],
-            ripples_snap   = [{"x": r.x, "y": r.y, "radius": r.radius, "alpha": r.alpha, "color": r.color} for r in ripples]
+            packet_snap    = [{"trail": list(p.trail), "color": p.color, "req_id": p.req_id, "alpha": p.alpha} for p in packets],
+            ripples_snap   = [{"x": r.x, "y": r.y, "radius": r.radius, "alpha": r.alpha, "color": r.color} for r in ripples],
+            popups_snap    = [{"x": po.x, "y": po.y, "text": po.text, "color": po.color, "life": po.life} for po in popups]
         )
 
 # ─────────────────────────────────────────────
@@ -341,14 +387,15 @@ def draw_hud(fs: FrameState, input_box):
         y += 22
 
     # Stats Strip
-    sy = NODE_AREA_H + CTRL_H
-    pygame.draw.rect(screen, COLOR_BG_DEEP, (0, sy, MAIN_W, INPUT_H))
+    sy = NODE_AREA_H
+    pygame.draw.rect(screen, COLOR_BG_DEEP, (0, sy, MAIN_W, HEIGHT - sy))
     
+    sy_stats = NODE_AREA_H + 170
     sx = 40
     for emo, col in [("Happy", COLOR_NEON_GREEN), ("Sad", COLOR_NEON_BLUE), ("Angry", COLOR_NEON_RED)]:
         count = fs.emotion_counts.get(emo, 0)
         txt = F_BODY.render(f"{emo}: {count}", True, col)
-        screen.blit(txt, (sx, sy + 60))
+        screen.blit(txt, (sx, sy_stats))
         sx += 180
 
 # ─────────────────────────────────────────────
@@ -388,6 +435,15 @@ PROJ_DIR = "/home/folium/Documents/Kafka/proj_with_kafka"
 SVC_LIST = ["service_a", "service_b", "service_c", "kafka"]
 svc_states = {s: True for s in SVC_LIST}
 
+SCENARIOS = {
+    "RESET": {"service_a": True, "service_b": True, "service_c": True, "kafka": True},
+    "S1: No B": {"service_a": True, "service_b": False, "service_c": True, "kafka": True},
+    "S2: No C": {"service_a": True, "service_b": True, "service_c": False, "kafka": True},
+    "S3: No B,C": {"service_a": True, "service_b": False, "service_c": False, "kafka": True},
+    "S4: Kafka Down": {"service_a": True, "service_b": True, "service_c": True, "kafka": False},
+}
+SCENARIO_KEYS = list(SCENARIOS.keys())
+
 def toggle_svc(svc):
     is_up = svc_states[svc]
     action = "stop" if is_up else "start"
@@ -411,9 +467,16 @@ def toggle_svc(svc):
         with lock:
             _append_log(f"[CTRL ERR] Could not run docker-compose", COLOR_NEON_RED)
 
+def apply_scenario(scenario_name):
+    targets = SCENARIOS.get(scenario_name)
+    if not targets: return
+    for svc, target_state in targets.items():
+        if svc_states.get(svc, True) != target_state:
+            threading.Thread(target=toggle_svc, args=(svc,), daemon=True).start()
+
 # Init UI elements
-input_box = TextInput(40, NODE_AREA_H + 90, 600, 45)
-SEND_RECT = pygame.Rect(660, NODE_AREA_H + 90, 120, 45)
+input_box = TextInput(40, NODE_AREA_H + 115, 600, 45)
+SEND_RECT = pygame.Rect(660, NODE_AREA_H + 115, 120, 45)
 
 running = True
 clock = pygame.time.Clock()
@@ -423,6 +486,7 @@ try:
     while running:
         for event in pygame.event.get():
             if event.type == pygame.QUIT: running = False
+            if event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE: running = False
             if input_box.handle(event):
                 threading.Thread(target=send_req, args=(input_box.text,), daemon=True).start()
                 input_box.text = ""
@@ -435,6 +499,11 @@ try:
                     btn_rect = pygame.Rect(40 + i*160, NODE_AREA_H + 20, 140, 40)
                     if btn_rect.collidepoint(event.pos):
                         threading.Thread(target=toggle_svc, args=(svc,), daemon=True).start()
+                
+                for i, s_key in enumerate(SCENARIO_KEYS):
+                    btn_rect = pygame.Rect(150 + i*150, NODE_AREA_H + 65, 140, 40)
+                    if btn_rect.collidepoint(event.pos):
+                        apply_scenario(s_key)
 
         # SNAPSHOT
         fs = make_snapshot(log_scroll)
@@ -447,7 +516,18 @@ try:
         # Connections (Faint Glow Lines)
         for name, pos in NODES.items():
             if name != "Broker":
-                pygame.draw.line(screen, (30, 40, 60), NODES["Broker"], pos, 1)
+                target_svc = name.lower()
+                is_off = False
+                if target_svc in svc_states:
+                    is_off = not svc_states[target_svc]
+                
+                l_col = COLOR_NEON_RED if is_off else (30, 40, 60)
+                if is_off:
+                    pygame.draw.line(screen, l_col, NODES["Broker"], pos, 2)
+                    ot = F_TINY.render("OFFLINE", True, COLOR_NEON_RED)
+                    screen.blit(ot, ((NODES["Broker"][0] + pos[0])//2 - ot.get_width()//2, (NODES["Broker"][1] + pos[1])//2 - 15))
+                else:
+                    pygame.draw.line(screen, l_col, NODES["Broker"], pos, 1)
 
         # Draw Ripples
         for r in fs.ripples_snap:
@@ -459,8 +539,13 @@ try:
         for p in fs.packet_snap:
             if len(p["trail"]) > 1:
                 for i, pos in enumerate(p["trail"]):
-                    alpha = int(255 * (i / len(p["trail"])))
+                    alpha = int(p["alpha"] * (i / len(p["trail"])))
                     pygame.draw.circle(screen, (*p["color"], alpha), pos, 4)
+
+        for p in fs.popups_snap:
+            alpha = int(min(255, p["life"] * 255))
+            st = F_SM.render(p["text"], True, (*p["color"], alpha))
+            screen.blit(st, (p["x"] - st.get_width()//2, p["y"]))
 
         hover_node = draw_nodes_premium(fs, mouse_pos)
         
@@ -479,6 +564,14 @@ try:
             col = COLOR_NEON_GREEN if up else COLOR_NEON_RED
             draw_glass_rect(screen, rect, (20, 20, 30), col)
             lt = F_SM.render(svc.replace("_", " ").upper(), True, WHITE)
+            screen.blit(lt, (rect.centerx - lt.get_width()//2, rect.centery - lt.get_height()//2))
+
+        st = F_SM.render("SCENARIOS:", True, (130, 140, 160))
+        screen.blit(st, (40, NODE_AREA_H + 75))
+        for i, s_key in enumerate(SCENARIO_KEYS):
+            rect = pygame.Rect(150 + i*150, NODE_AREA_H + 65, 140, 40)
+            draw_glass_rect(screen, rect, (20, 20, 30), COLOR_NEON_YELLOW)
+            lt = F_TINY.render(s_key, True, WHITE)
             screen.blit(lt, (rect.centerx - lt.get_width()//2, rect.centery - lt.get_height()//2))
 
         # Tooltip
