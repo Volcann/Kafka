@@ -21,6 +21,7 @@ import subprocess
 import signal
 from dataclasses import dataclass, field
 from typing import List, Tuple
+import random
 
 pygame.init()
 
@@ -140,6 +141,7 @@ packets: list = []
 ripples: list = []
 popups: list = []
 event_log: list = []
+kafka_lag = 0
 
 @dataclass
 class Packet:
@@ -162,8 +164,10 @@ class FrameState:
     packet_snap: list
     ripples_snap: list
     popups_snap: list
+    kafka_lag: int
 
 def make_snapshot(log_scroll: int) -> FrameState:
+    global kafka_lag
     with lock:
         # Update Packets
         alive_packets = []
@@ -195,10 +199,13 @@ def make_snapshot(log_scroll: int) -> FrameState:
                 if p.progress >= 1.0:
                     ripples.append(Ripple(ep[0], ep[1], p.color))
                     if p.end == "Broker":
+                        kafka_lag += 1
                         if not svc_states.get("service_b", True):
                             popups.append(Popup(ep[0], ep[1]+50, "SAFE IN KAFKA (Queueing for B)", COLOR_NEON_GREEN))
                         if not svc_states.get("service_c", True):
                             popups.append(Popup(ep[0], ep[1]+75, "SAFE IN KAFKA (Queueing for C)", COLOR_NEON_YELLOW))
+                    elif p.start == "Broker":
+                        kafka_lag = max(0, kafka_lag - 1)
                     p.alive = False
             
             if p.alive: alive_packets.append(p)
@@ -220,7 +227,8 @@ def make_snapshot(log_scroll: int) -> FrameState:
             log_slice      = list(event_log[-(18 + log_scroll):][:18]),
             packet_snap    = [{"trail": list(p.trail), "color": p.color, "req_id": p.req_id, "alpha": p.alpha} for p in packets],
             ripples_snap   = [{"x": r.x, "y": r.y, "radius": r.radius, "alpha": r.alpha, "color": r.color} for r in ripples],
-            popups_snap    = [{"x": po.x, "y": po.y, "text": po.text, "color": po.color, "life": po.life} for po in popups]
+            popups_snap    = [{"x": po.x, "y": po.y, "text": po.text, "color": po.color, "life": po.life} for po in popups],
+            kafka_lag      = kafka_lag
         )
 
 # ─────────────────────────────────────────────
@@ -360,8 +368,17 @@ def draw_nodes_premium(fs: FrameState, mouse_pos):
         nt = F_NODE.render(name, True, WHITE)
         screen.blit(nt, (x - nt.get_width()//2, y - 35))
         
-        st = F_SM.render(status if name != "Broker" else "KAFKA CLUSTER", True, GRAY)
-        screen.blit(st, (x - st.get_width()//2, y - 5))
+        # Show Kafka Lag for Broker
+        if name == "Broker" and fs.kafka_lag > 0:
+            lt = F_TINY.render(f"LAG: {fs.kafka_lag}", True, COLOR_NEON_RED)
+            screen.blit(lt, (x - lt.get_width()//2, y + 25))
+            bar_w = 100
+            pygame.draw.rect(screen, (40, 40, 40), (x - bar_w//2, y + 45, bar_w, 6))
+            fill_w = min(bar_w, fs.kafka_lag * 10)
+            pygame.draw.rect(screen, COLOR_NEON_RED, (x - bar_w//2, y + 45, fill_w, 6))
+        else:
+            st = F_SM.render(status if name != "Broker" else "KAFKA CLUSTER", True, GRAY)
+            screen.blit(st, (x - st.get_width()//2, y - 5))
         
         mod = fs.active_module.get(name)
         if mod and status != "IDLE":
@@ -473,9 +490,38 @@ def apply_scenario(scenario_name):
         if svc_states.get(svc, True) != target_state:
             threading.Thread(target=toggle_svc, args=(svc,), daemon=True).start()
 
+def stress_test():
+    with lock:
+        _append_log("[STRESS] Starting flood (20 req)...", COLOR_NEON_RED)
+    phrases = [
+        "I love this new system!", 
+        "Great job on the deployment!", 
+        "Amazing work, very happy.",
+        "This is terrible and I hate it.",
+        "Worst experience ever, extremely angry.",
+        "I am so frustrated with this service."
+    ]
+    for i in range(20):
+        text = random.choice(phrases)
+        threading.Thread(target=send_req, args=(text,), daemon=True).start()
+        time.sleep(0.1)
+
+def reset_all_stats():
+    try:
+        requests.post("http://localhost:5003/api/reset", timeout=2)
+        with lock:
+            _append_log("[RESET] Stats cleared successfully", COLOR_NEON_GREEN)
+            global kafka_lag
+            kafka_lag = 0
+    except:
+        with lock:
+            _append_log("[RESET] Error resetting stats", COLOR_NEON_RED)
+
 # Init UI elements
-input_box = TextInput(40, HEIGHT - 70, 600, 45)
-SEND_RECT = pygame.Rect(660, HEIGHT - 70, 120, 45)
+input_box = TextInput(40, HEIGHT - 70, 400, 45)
+SEND_RECT = pygame.Rect(450, HEIGHT - 70, 100, 45)
+STRESS_RECT = pygame.Rect(560, HEIGHT - 70, 140, 45)
+RESET_RECT = pygame.Rect(710, HEIGHT - 70, 140, 45)
 
 running = True
 clock = pygame.time.Clock()
@@ -493,6 +539,10 @@ try:
                 if SEND_RECT.collidepoint(event.pos) and input_box.text:
                     threading.Thread(target=send_req, args=(input_box.text,), daemon=True).start()
                     input_box.text = ""
+                if STRESS_RECT.collidepoint(event.pos):
+                    threading.Thread(target=stress_test, daemon=True).start()
+                if RESET_RECT.collidepoint(event.pos):
+                    threading.Thread(target=reset_all_stats, daemon=True).start()
                 # Service Control Buttons
                 for i, svc in enumerate(SVC_LIST):
                     btn_rect = pygame.Rect(40 + i*160, CTRL_START_Y, 140, 40)
@@ -556,6 +606,14 @@ try:
         draw_glass_rect(screen, SEND_RECT, (40, 80, 50), COLOR_NEON_GREEN)
         st = F_BODY.render("SEND", True, WHITE)
         screen.blit(st, (SEND_RECT.centerx - st.get_width()//2, SEND_RECT.centery - st.get_height()//2))
+        
+        draw_glass_rect(screen, STRESS_RECT, (80, 40, 40), COLOR_NEON_RED)
+        st = F_BODY.render("STRESS", True, WHITE)
+        screen.blit(st, (STRESS_RECT.centerx - st.get_width()//2, STRESS_RECT.centery - st.get_height()//2))
+
+        draw_glass_rect(screen, RESET_RECT, (40, 40, 80), COLOR_NEON_BLUE)
+        st = F_BODY.render("RESET", True, WHITE)
+        screen.blit(st, (RESET_RECT.centerx - st.get_width()//2, RESET_RECT.centery - st.get_height()//2))
         
         for i, svc in enumerate(SVC_LIST):
             rect = pygame.Rect(40 + i*160, CTRL_START_Y, 140, 40)
