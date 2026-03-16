@@ -27,14 +27,15 @@ pygame.init()
 # ─────────────────────────────────────────────
 #  CONSTANTS & LAYOUT
 # ─────────────────────────────────────────────
-WIDTH, HEIGHT = 1400, 900
+info = pygame.display.Info()
+WIDTH, HEIGHT = info.current_w, info.current_h
 LOG_W         = 340
 MAIN_W        = WIDTH - LOG_W
 NODE_AREA_H   = 600
 CTRL_H        = 80
 INPUT_H       = HEIGHT - NODE_AREA_H - CTRL_H
 
-screen = pygame.display.set_mode((WIDTH, HEIGHT))
+screen = pygame.display.set_mode((WIDTH, HEIGHT), pygame.FULLSCREEN)
 pygame.display.set_caption("Microservices Debugger — Premium Edition")
 
 # ─────────────────────────────────────────────
@@ -491,6 +492,7 @@ try:
     while running:
         for event in pygame.event.get():
             if event.type == pygame.QUIT: running = False
+            if event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE: running = False
             if input_box.handle(event):
                 threading.Thread(target=send_req, args=(input_box.text, emotion_counts), daemon=True).start()
                 input_box.text = ""
