@@ -19,6 +19,12 @@ consumer_conf = {
 
 producer_conf = {'bootstrap.servers': KAFKA_BOOTSTRAP_SERVERS}
 
+def delivery_report(err, msg):
+    if err is not None:
+        print(f"Message delivery failed: {err}")
+    else:
+        print(f"Message delivered to {msg.topic()} [{msg.partition()}]")
+
 def init_db():
     os.makedirs(os.path.dirname(DB_FILE), exist_ok=True)
     conn = sqlite3.connect(DB_FILE)
@@ -81,8 +87,9 @@ def process_message(msg, producer):
             "emotion": emotion,
             "user": data.get('user', 'Unknown')
         }
-        producer.produce('analyzed-messages', key=request_id, value=json.dumps(result_msg))
+        producer.produce('analyzed-messages', key=request_id, value=json.dumps(result_msg), callback=delivery_report)
         producer.poll(0)
+        producer.flush()
 
     except Exception as e:
         print(f"Error processing message: {e}")

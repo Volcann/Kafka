@@ -63,11 +63,14 @@ def kafka_consumer_thread():
                     continue
                 elif msg.error().code() == KafkaError.UNKNOWN_TOPIC_OR_PART:
                     print(f"Topic not ready yet: {msg.error()}")
-                    time.sleep(2)
+                    time.sleep(5)
                     continue
                 else:
                     print(f"Kafka error: {msg.error()}")
-                    break
+                    # Instead of breaking, we log and wait. 
+                    # This prevents the thread from dying.
+                    time.sleep(5)
+                    continue
             
             val = json.loads(msg.value().decode('utf-8'))
             request_id = val.get('request_id', 'UNKNOWN')
