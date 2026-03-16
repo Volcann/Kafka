@@ -31,9 +31,9 @@ infoObject = pygame.display.Info()
 WIDTH, HEIGHT = infoObject.current_w, infoObject.current_h
 LOG_W         = 340
 MAIN_W        = WIDTH - LOG_W
-NODE_AREA_H   = 600
-CTRL_H        = 80
-INPUT_H       = HEIGHT - NODE_AREA_H - CTRL_H
+# Reduce NODE_AREA_H to give space at the bottom for controls
+NODE_AREA_H   = HEIGHT - 220 
+CTRL_START_Y  = NODE_AREA_H + 20
 
 screen = pygame.display.set_mode((WIDTH, HEIGHT), pygame.FULLSCREEN)
 pygame.display.set_caption("Kafka Debugger — Premium Edition")
@@ -70,8 +70,8 @@ F_TINY  = pygame.font.SysFont("Monospace", 14)
 #  STAR TOPOLOGY LAYOUT
 # ─────────────────────────────────────────────
 CENTER_X = MAIN_W // 2
-CENTER_Y = NODE_AREA_H // 2 + 40
-RADIUS   = 220
+CENTER_Y = NODE_AREA_H // 2 + 20
+RADIUS   = 200
 
 # Broker is at the center
 # Others are arranged in a circle
@@ -474,8 +474,8 @@ def apply_scenario(scenario_name):
             threading.Thread(target=toggle_svc, args=(svc,), daemon=True).start()
 
 # Init UI elements
-input_box = TextInput(40, NODE_AREA_H + 115, 600, 45)
-SEND_RECT = pygame.Rect(660, NODE_AREA_H + 115, 120, 45)
+input_box = TextInput(40, HEIGHT - 70, 600, 45)
+SEND_RECT = pygame.Rect(660, HEIGHT - 70, 120, 45)
 
 running = True
 clock = pygame.time.Clock()
@@ -493,14 +493,14 @@ try:
                 if SEND_RECT.collidepoint(event.pos) and input_box.text:
                     threading.Thread(target=send_req, args=(input_box.text,), daemon=True).start()
                     input_box.text = ""
-                # Service Control Buttons (Simplistic for now)
+                # Service Control Buttons
                 for i, svc in enumerate(SVC_LIST):
-                    btn_rect = pygame.Rect(40 + i*160, NODE_AREA_H + 20, 140, 40)
+                    btn_rect = pygame.Rect(40 + i*160, CTRL_START_Y, 140, 40)
                     if btn_rect.collidepoint(event.pos):
                         threading.Thread(target=toggle_svc, args=(svc,), daemon=True).start()
                 
                 for i, s_key in enumerate(SCENARIO_KEYS):
-                    btn_rect = pygame.Rect(150 + i*150, NODE_AREA_H + 65, 140, 40)
+                    btn_rect = pygame.Rect(150 + i*150, CTRL_START_Y + 50, 140, 40)
                     if btn_rect.collidepoint(event.pos):
                         apply_scenario(s_key)
 
@@ -558,7 +558,7 @@ try:
         screen.blit(st, (SEND_RECT.centerx - st.get_width()//2, SEND_RECT.centery - st.get_height()//2))
         
         for i, svc in enumerate(SVC_LIST):
-            rect = pygame.Rect(40 + i*160, NODE_AREA_H + 20, 140, 40)
+            rect = pygame.Rect(40 + i*160, CTRL_START_Y, 140, 40)
             up = svc_states[svc]
             col = COLOR_NEON_GREEN if up else COLOR_NEON_RED
             draw_glass_rect(screen, rect, (20, 20, 30), col)
@@ -566,9 +566,9 @@ try:
             screen.blit(lt, (rect.centerx - lt.get_width()//2, rect.centery - lt.get_height()//2))
 
         st = F_SM.render("SCENARIOS:", True, (130, 140, 160))
-        screen.blit(st, (40, NODE_AREA_H + 75))
+        screen.blit(st, (40, CTRL_START_Y + 60))
         for i, s_key in enumerate(SCENARIO_KEYS):
-            rect = pygame.Rect(150 + i*150, NODE_AREA_H + 65, 140, 40)
+            rect = pygame.Rect(150 + i*150, CTRL_START_Y + 50, 140, 40)
             draw_glass_rect(screen, rect, (20, 20, 30), COLOR_NEON_YELLOW)
             lt = F_TINY.render(s_key, True, WHITE)
             screen.blit(lt, (rect.centerx - lt.get_width()//2, rect.centery - lt.get_height()//2))
