@@ -435,6 +435,18 @@ PROJ_DIR = "/home/folium/Documents/Kafka/proj_without_kafka"
 SVC_LIST = ["Service_A", "Service_B", "Service_C"]
 # svc_states already initialized at top
 
+SCENARIOS = {
+    "RESET": {"Service_A": True, "Service_B": True, "Service_C": True},
+    "S1: No A": {"Service_A": False, "Service_B": True, "Service_C": True},
+    "S2: No B": {"Service_A": True, "Service_B": False, "Service_C": True},
+    "S3: No C": {"Service_A": True, "Service_B": True, "Service_C": False},
+    "S4: No A,B": {"Service_A": False, "Service_B": False, "Service_C": True},
+    "S5: No A,C": {"Service_A": False, "Service_B": True, "Service_C": False},
+    "S6: No B,C": {"Service_A": True, "Service_B": False, "Service_C": False},
+    "S7: ALL OFF": {"Service_A": False, "Service_B": False, "Service_C": False},
+}
+SCENARIO_KEYS = list(SCENARIOS.keys())
+
 def toggle_svc(svc):
     is_up = svc_states[svc]
     action = "stop" if is_up else "start"
@@ -461,6 +473,13 @@ def toggle_svc(svc):
         with lock:
             _append_log(f"[CTRL ERR] Could not run docker-compose", COLOR_NEON_RED)
 
+def apply_scenario(scenario_name):
+    targets = SCENARIOS.get(scenario_name)
+    if not targets: return
+    for svc, target_state in targets.items():
+        if svc_states.get(svc, True) != target_state:
+            threading.Thread(target=toggle_svc, args=(svc,), daemon=True).start()
+
 input_box = TextInput(40, NODE_AREA_H + 90, 600, 45)
 SEND_RECT = pygame.Rect(660, NODE_AREA_H + 90, 120, 45)
 
@@ -483,6 +502,11 @@ try:
                     btn_rect = pygame.Rect(40 + i*165, NODE_AREA_H + 20, 150, 40)
                     if btn_rect.collidepoint(event.pos):
                         threading.Thread(target=toggle_svc, args=(svc,), daemon=True).start()
+                
+                for i, s_key in enumerate(SCENARIO_KEYS):
+                    btn_rect = pygame.Rect(40 + i*115, 800, 105, 40)
+                    if btn_rect.collidepoint(event.pos):
+                        apply_scenario(s_key)
 
         fs = make_snapshot(log_scroll)
         mouse_pos = pygame.mouse.get_pos()
@@ -540,6 +564,14 @@ try:
             col = COLOR_NEON_GREEN if up else COLOR_NEON_RED
             draw_glass_rect(screen, rect, (20, 20, 30), col)
             lt = F_SM.render(svc.replace("_", " ").upper(), True, WHITE)
+            screen.blit(lt, (rect.centerx - lt.get_width()//2, rect.centery - lt.get_height()//2))
+
+        st = F_SM.render("SCENARIOS:", True, (130, 140, 160))
+        screen.blit(st, (40, 775))
+        for i, s_key in enumerate(SCENARIO_KEYS):
+            rect = pygame.Rect(40 + i*115, 800, 105, 40)
+            draw_glass_rect(screen, rect, (20, 20, 30), COLOR_NEON_YELLOW)
+            lt = F_TINY.render(s_key, True, WHITE)
             screen.blit(lt, (rect.centerx - lt.get_width()//2, rect.centery - lt.get_height()//2))
 
         if hover_node:
