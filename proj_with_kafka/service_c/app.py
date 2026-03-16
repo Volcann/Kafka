@@ -41,6 +41,14 @@ def index():
     return render_template('index.html')
 
 
+@app.route('/api/reset', methods=['POST'])
+def reset_stats():
+    global counts
+    counts = {"Happy": 0, "Sad": 0, "Angry": 0}
+    socketio.emit('update_counts', counts)
+    return "", 204
+
+
 def kafka_consumer_thread():
     consumer_conf = {
         'bootstrap.servers': KAFKA_BOOTSTRAP_SERVERS,
@@ -86,6 +94,7 @@ def kafka_consumer_thread():
                 
             print(f"{request_id} - Broadcasting WebSocket update")
             socketio.emit('update_counts', counts)
+            socketio.emit('new_message', val)
 
             debug_event(
                 "Service_C", "Broker", "RESP_OUT",

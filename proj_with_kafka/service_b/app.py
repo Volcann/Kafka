@@ -34,6 +34,7 @@ def init_db():
     conn.commit()
     conn.close()
 
+
 def debug_event(src, dst, action, request_id="UNKNOWN", module=None):
     try:
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -85,7 +86,8 @@ def process_message(msg, producer):
         result_msg = {
             "request_id": request_id,
             "emotion": emotion,
-            "user": data.get('user', 'Unknown')
+            "user": data.get('user', 'Unknown'),
+            "text": text
         }
         producer.produce('analyzed-messages', key=request_id, value=json.dumps(result_msg), callback=delivery_report)
         producer.poll(0)
