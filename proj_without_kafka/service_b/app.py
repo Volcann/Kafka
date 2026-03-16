@@ -13,6 +13,7 @@ SERVICE_C_URL = os.environ.get("SERVICE_C_URL", "http://service_c:5003/count")
 DEBUGGER_HOST = os.environ.get("DEBUGGER_HOST", "host.docker.internal")
 DB_FILE = "sentiments.db"
 
+
 def init_db():
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
@@ -21,6 +22,7 @@ def init_db():
     conn.commit()
     conn.close()
 
+
 def debug_event(src, dst, action, request_id="UNKNOWN", module=None):
     try:
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -28,8 +30,9 @@ def debug_event(src, dst, action, request_id="UNKNOWN", module=None):
         if module:
             payload["module"] = module
         sock.sendto(json.dumps(payload).encode('utf-8'), (DEBUGGER_HOST, 9999))
-    except:
-        pass
+    except Exception as e:
+        print(f"Error sending debug event: {e}")
+
 
 @app.route('/analyze', methods=['POST'])
 def analyze():
@@ -49,15 +52,14 @@ def analyze():
     elif polarity < -0.1:
         emotion = "Angry"
     else:
-        emotion = "Sad" 
-    
+        emotion = "Sad"
+
     data['emotion'] = emotion
-    
     if emotion == "Angry":
         debug_event("Service_B", "Service_B", "PROCESSING", request_id, module="Alerting")
         print(f"ALERT! Received an angry message from {data.get('user', 'Unknown')}")
         time.sleep(3)
-            
+
     try:
         print(f"{request_id} - Saving to database")
         debug_event("Service_B", "Service_B", "PROCESSING", request_id, module="DB Storage")
@@ -77,12 +79,13 @@ def analyze():
         headers = {'X-Request-ID': request_id}
         response = requests.post(SERVICE_C_URL, json={'emotion': emotion}, headers=headers, timeout=10)
         debug_event("Service_B", "Service_C", "RESP_IN", request_id, module="Dashboard Update")
-        
+
         debug_event("Service_B", "Service_A", "RESP_OUT", request_id, module="Success")
         return jsonify(data), 200
     except requests.exceptions.RequestException as e:
         debug_event("Service_B", "Service_A", "RESP_OUT", request_id, module="Error")
         return jsonify({"error": str(e), "message": "Failed to communicate with Service C"}), 500
+
 
 if __name__ == '__main__':
     init_db()
