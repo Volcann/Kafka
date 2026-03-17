@@ -274,6 +274,6 @@ So basically:
 
 ## Slide 19 — Resources
 
-* Example project: Volcann/Kafka
+* Example project: Kafka
 
 ---
