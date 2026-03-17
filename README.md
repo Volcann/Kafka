@@ -85,35 +85,103 @@ Presenter: (your name) | 45–60 min
 
 ---
 
-## Slide 8 — Why Kafka was made (short story)
+## Slide 8 — Why Kafka Was Made
 
-Linked to big-scale needs at LinkedIn:
+* LinkedIn had tons of user actions every second.
+* They needed a way to track them in real time without slowing things down.
+* Kafka stores messages safely and lets different systems work independently.
+  * Clicking “Like” on a post
+  * Sending a message to a connection
+  * Updating your profile or work experience
+  * Viewing someone’s profile
+  * Searching for jobs or people
 
-* LinkedIn had millions of user events.
-* They needed real-time tracking without slowing users down.
-* Kafka lets systems work independently and keeps messages safe until consumers are ready.
-
-*Short take:* Kafka = a fast, reliable pipeline for lots of events.
-
----
-
-## Slide 9 — Topics and partitions (visual idea)
-
-* Topic = stream name (e.g., `orders`).
-* Partition = split for parallel work (e.g., partition 0, 1, 2).
-* Ordering is kept inside each partition only.
+**In short:** Kafka = super fast, reliable event delivery.
 
 ---
 
-## Slide 10 — Producers vs Consumers (simple)
+## Slide 9 — Producers vs Consumers (simple)
 
-* Producers write messages to topics.
-* Consumers read from topics.
-* Consumer groups share partitions so work is balanced.
+* Producers: write messages to topics.
+* Consumers: read from topics.
+* Consumer groups: share partitions so work is balanced.
+* Brokers: store the messages and manage partitions for topics. A broker is just a Kafka server. It can host many partitions for many topics.
+* Leader: A leader is a role in the broker that currently handles reads/writes for a specific partition.
 
 ---
 
-## Slide 11 — Delivery guarantees (super short)
+## Slide 10 — Topics and Partitions (with examples)
+
+* **Topic** = the name of a stream of data.
+  *Example:* `orders`, `user-signups`, `payments`.
+* **Partition** = a slice of the topic for parallel processing.
+  *Example:* `orders` topic → Partition 0, Partition 1, Partition 2.
+* **Ordering guarantee** is per partition, not across partitions.
+  *Example:* All messages for a single user go to Partition 1 → order preserved. Messages for other users may go to other partitions → order not guaranteed across partitions.
+
+---
+
+## Slide 11 — More About Partitions & Assignment
+
+* **What a single partition does:**
+
+  * Handles reads and writes for that slice of data.
+  * Guarantees **message order only within itself**.
+
+* **How many partitions can a topic have:**
+
+  * You decide when creating the topic.
+  * **1 partition** → simple, all messages ordered, no parallelism.
+  * **Multiple partitions** → allows many consumers to read at the same time → faster processing.
+  * Example: `orders` topic → 3 partitions → Partition 0, 1, 2.
+
+* **Assigning messages to partitions:**
+
+  1. **Without a key:** Kafka distributes messages in a **round-robin** way → evenly across partitions.
+  2. **With a key:** Kafka always sends messages with the same key to the **same partition** → preserves order for that key.
+
+* **Example:**
+
+```text id="1k1uzv"
+Orders topic → 3 partitions
+
+Round-robin (no key):
+Msg1 → Partition 0
+Msg2 → Partition 1
+Msg3 → Partition 2
+Msg4 → Partition 0
+...
+
+With key (user_id):
+User 2 → Partition 1
+User 5 → Partition 1
+User 8 → Partition 2
+```
+
+* **Throughput tip:**
+
+  * A single partition can handle lots of messages, but splitting into multiple partitions **scales better** for high traffic.
+
+---
+
+## Slide 12 — How Kafka stays up (fault tolerance)
+
+* Partitions have a leader and followers.
+* Replication factor = how many copies exist (e.g., 3). Role of Followers: They replicate the data from the leader of their partition. They do not handle reads/writes from producers or consumers (unless promoted to leader). They stay in sync with the leader so that if the leader dies, one of them can take over immediately.
+* If leader dies, a follower takes over.
+
+How it works?
+Partition 0:
+  Leader -> Broker 1
+  Followers -> Broker 2, Broker 3
+
+Broker 1: receives all writes and reads (leader)
+Broker 2 & Broker 3: copy every message Broker 1 gets (followers)
+If Broker 1 fails → Broker 2 or 3 becomes new leader
+
+---
+
+## Slide 13 — Delivery guarantees (super short)
 
 * **At most once:** maybe lost, but no duplicates. Fast.
 * **At least once:** not lost, but may have duplicates. Safer.
@@ -121,22 +189,14 @@ Linked to big-scale needs at LinkedIn:
 
 ---
 
-## Slide 12 — How Kafka stays up (fault tolerance)
-
-* Partitions have a leader and followers.
-* Replication factor = how many copies exist (e.g., 3).
-* If leader dies, a follower takes over.
-
----
-
-## Slide 13 — Message storage rules
+## Slide 14 — Message storage rules
 
 * Kafka keeps messages for a time window (retention).
 * Log compaction keeps only the latest message per key (good for current state).
 
 ---
 
-## Slide 14 — Example new workflow using Kafka (easy)
+## Slide 15 — Example new workflow using Kafka (easy)
 
 **Service A — Gateway**
 
@@ -160,7 +220,7 @@ Linked to big-scale needs at LinkedIn:
 
 ---
 
-## Slide 15 — Short tips & gotchas
+## Slide 16 — Short tips & gotchas
 
 * Choose partitions carefully (affects order + speed).
 * Use enough replication for safety.
@@ -170,7 +230,7 @@ Linked to big-scale needs at LinkedIn:
 
 ---
 
-## Slide 16 — When Kafka is too much
+## Slide 17 — When Kafka is too much
 
 * Small apps that only need simple HTTP calls.
 * Systems that must keep strict DB transactions only (Kafka complements DBs, not replace).
@@ -178,7 +238,7 @@ Linked to big-scale needs at LinkedIn:
 
 ---
 
-## Slide 17 — Tiny hands-on ideas (beginner)
+## Slide 18 — Tiny hands-on ideas (beginner)
 
 1. Make a topic `orders` with 3 partitions. Send messages and see which partition they go to.
 2. Run two consumers in the same group and watch how partitions are split between them.
@@ -186,7 +246,7 @@ Linked to big-scale needs at LinkedIn:
 
 ---
 
-## Slide 18 — Quick glossary (one-line each)
+## Slide 19 — Quick glossary (one-line each)
 
 * **Topic:** name of message stream.
 * **Partition:** parallel piece of topic.
@@ -197,7 +257,7 @@ Linked to big-scale needs at LinkedIn:
 
 ---
 
-## Slide 19 — Resources
+## Slide 20 — Resources
 
 * Example project: Volcann/Kafka
 
