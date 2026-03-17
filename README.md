@@ -69,7 +69,22 @@ Presenter: (your name) | 45–60 min
 
 ---
 
-## Slide 7 — Core Kafka concepts (plain)
+## Slide 7 — Why Kafka Was Made
+
+* LinkedIn had tons of user actions every second.
+* They needed a way to track them in real time without slowing things down.
+* Kafka stores messages safely and lets different systems work independently.
+  * Clicking “Like” on a post
+  * Sending a message to a connection
+  * Updating your profile or work experience
+  * Viewing someone’s profile
+  * Searching for jobs or people
+
+**In short:** Kafka = super fast, reliable event delivery.
+
+---
+
+## Slide 8 — Core Kafka concepts (plain)
 
 * **Message / Event:** one piece of data (a single line).
 * **Broker:** a Kafka server that holds messages.
@@ -82,21 +97,6 @@ Presenter: (your name) | 45–60 min
 * **Replication:** copies of data so it’s safe if one server dies.
 
 *Analogy:* topic = mailbox, producer = person dropping mail, consumer = person reading mail.
-
----
-
-## Slide 8 — Why Kafka Was Made
-
-* LinkedIn had tons of user actions every second.
-* They needed a way to track them in real time without slowing things down.
-* Kafka stores messages safely and lets different systems work independently.
-  * Clicking “Like” on a post
-  * Sending a message to a connection
-  * Updating your profile or work experience
-  * Viewing someone’s profile
-  * Searching for jobs or people
-
-**In short:** Kafka = super fast, reliable event delivery.
 
 ---
 
