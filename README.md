@@ -253,27 +253,19 @@ So basically:
 
 ---
 
-## Slide 17 — Tiny hands-on ideas (beginner)
-
-1. Make a topic `orders` with 3 partitions. Send messages and see which partition they go to.
-2. Run two consumers in the same group and watch how partitions are split between them.
-3. Build a tiny app: Producer sends JSON orders → Kafka → Consumer prints them.
-
----
-
-## Slide 18 — Quick glossary (one-line each)
-
-* **Topic:** name of message stream.
-* **Partition:** parallel piece of topic.
-* **Offset:** message number.
-* **Broker:** Kafka server.
-* **Producer:** sender.
-* **Consumer:** reader.
-
----
-
-## Slide 19 — Resources
+## Slide 17 — Resources
 
 * Example project: Kafka
+
+---
+
+## Slide 18 — Quick Kafka Endpoint (super short)
+
+* **Produce message:** send data → `POST /topics/{topic_name}`
+* **Consume message:** read data → `GET /topics/{topic_name}`
+* **Check partitions:** `GET /topics/{topic_name}/partitions`
+* **Offset info:** `GET /topics/{topic_name}/partitions/{partition}/offsets`
+
+*Think:* “Producers write, consumers read, brokers handle the rest.”
 
 ---
