@@ -190,9 +190,34 @@ If Broker 1 fails → Broker 2 or 3 becomes new leader
 ---
 
 ## Slide 14 — Message storage rules
+1. Retention (Time Window)
+* Retention is a time window that allows the broker to continuously store events.
 
-* Kafka keeps messages for a time window (retention).
-* Log compaction keeps only the latest message per key (good for current state).
+2. Log Compaction
+* log compaction is like removing duplicates, but not blindly—it keeps only the latest message for each key.
+* Kafka can **keep only the newest message for each key** in a topic.
+* Instead of storing **all history**, it removes older messages with the same key.
+* This is useful when you care about the **current state**, not every change over time.
+
+**Example:**
+
+* Topic: `user-profiles`
+* Key = `user_id`
+* Messages:
+
+  1. `{user_id: 101, email: "a@mail.com"}`
+  2. `{user_id: 101, email: "b@mail.com"}`
+  3. `{user_id: 102, email: "x@mail.com"}`
+
+After log compaction:
+
+* Only the **latest message per user_id** remains:
+
+  * `{user_id: 101, email: "b@mail.com"}`
+  * `{user_id: 102, email: "x@mail.com"}`
+
+So basically:
+**Retention = time-based, Log Compaction = key-based.**
 
 ---
 
@@ -220,17 +245,7 @@ If Broker 1 fails → Broker 2 or 3 becomes new leader
 
 ---
 
-## Slide 16 — Short tips & gotchas
-
-* Choose partitions carefully (affects order + speed).
-* Use enough replication for safety.
-* Watch consumer lag — it shows unread messages.
-* Use keys when order per key matters.
-* Be ready to handle duplicates with at-least-once.
-
----
-
-## Slide 17 — When Kafka is too much
+## Slide 16 — When Kafka is too much
 
 * Small apps that only need simple HTTP calls.
 * Systems that must keep strict DB transactions only (Kafka complements DBs, not replace).
@@ -238,7 +253,7 @@ If Broker 1 fails → Broker 2 or 3 becomes new leader
 
 ---
 
-## Slide 18 — Tiny hands-on ideas (beginner)
+## Slide 17 — Tiny hands-on ideas (beginner)
 
 1. Make a topic `orders` with 3 partitions. Send messages and see which partition they go to.
 2. Run two consumers in the same group and watch how partitions are split between them.
@@ -246,7 +261,7 @@ If Broker 1 fails → Broker 2 or 3 becomes new leader
 
 ---
 
-## Slide 19 — Quick glossary (one-line each)
+## Slide 18 — Quick glossary (one-line each)
 
 * **Topic:** name of message stream.
 * **Partition:** parallel piece of topic.
@@ -257,7 +272,7 @@ If Broker 1 fails → Broker 2 or 3 becomes new leader
 
 ---
 
-## Slide 20 — Resources
+## Slide 19 — Resources
 
 * Example project: Volcann/Kafka
 
