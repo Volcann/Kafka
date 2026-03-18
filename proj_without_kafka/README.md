@@ -4,7 +4,7 @@ A multi-service microservices project built using Python (Flask) and synchronous
 
 ## Architecture
 
-* **Service A (Ingestion)**: Runs on port `5001`. Receives JSON containing text, forwards it to Service B, and returns the final result.
+* **Service A (Ingestion)**: Runs on port `5000`. Receives JSON containing text, forwards it to Service B, and returns the final result.
 * **Service B (Emotion)**: Runs on port `5002`. Takes text, analyzes sentiment (Happy/Sad/Angry) using `TextBlob`, forwards the emotion to Service C, and finally returns 200 OK.
 * **Service C (Analytics)**: Runs on port `5003`. Receives emotion counts, updates the global dictionary, and pushes updates to a real-time web UI using SocketIO.
 
@@ -30,20 +30,30 @@ This will start isolated containers for `service_a`, `service_b`, and `service_c
 
 2. Open another terminal and send POST requests to Service A to inject messages:
 ```bash
-curl -X POST http://localhost:5001/post \
+curl -X POST http://localhost:5000/api/post \
      -H "Content-Type: application/json" \
+     -H "Authorization: Bearer super-secret-key" \
      -d '{"user": "alice", "text": "I absolutely love this new feature!"}'
 ```
 
 3. Send varying sentiments to see the dashboard counts increment automatically:
 ```bash
 # Sad
-curl -X POST http://localhost:5001/post \
+curl -X POST http://localhost:5000/api/post \
      -H "Content-Type: application/json" \
+     -H "Authorization: Bearer super-secret-key" \
      -d '{"user": "bob", "text": "This is terrible and boring."}'
 
 # Angry
-curl -X POST http://localhost:5001/post \
+curl -X POST http://localhost:5000/api/post \
      -H "Content-Type: application/json" \
+     -H "Authorization: Bearer super-secret-key" \
      -d '{"user": "mallory", "text": "I hate you very much!"}'
 ```
+
+## Differences from Kafka Version
+
+Compared to `proj_with_kafka`, this version:
+-   **Synchronous Coupling**: Service A waits for Service B, which waits for Service C. Any failure or latency cascades immediately.
+-   **No Message Durability**: If a service is down, the request fails, and data may be lost if not retried by the client.
+-   **Simpler Architecture**: No need for Zookeeper or Kafka brokers, making it easier to deploy for small-scale direct communication.
